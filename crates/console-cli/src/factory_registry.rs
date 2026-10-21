@@ -31,40 +31,62 @@ pub const FACTORY_REGISTRY_PATH: &str = "/etc/livespec/fabro-factories.json";
 ///
 /// The registry's `docker_host` field addresses the host's container runtime,
 /// which the console never speaks to -- only `server` is kept.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+///
+/// A registry that could not be read is a DISTINCT state from one that was
+/// read and maps nothing, and both are distinct from absent: the console must
+/// be able to tell an operator WHY a factory has no address, so `origin` and
+/// `unreadable` are carried here rather than collapsed into an empty map.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactoryRegistry {
+    origin: String,
     servers: BTreeMap<String, String>,
+    unreadable: Option<String>,
 }
 
 impl FactoryRegistry {
     #[must_use]
     /// Read the registry the host rendered at `path`.
     ///
-    /// An absent or unreadable file yields an EMPTY registry rather than an
-    /// error: a console host that dispatches nothing renders no registry, and
-    /// the console must still start and poll every other source there. What
-    /// the console must never do is treat an unresolved factory as absent --
-    /// that is what sends the Fabro source back to the CLI's localhost
-    /// default -- and that is decided by the caller, not here.
+    /// An absent or unreadable file is not an error -- a console host that
+    /// dispatches nothing renders no registry, and the console must still
+    /// start and poll every other source there. It is recorded, so a factory
+    /// that goes unresolved can say so in the operator's own terms rather than
+    /// vanishing from the table.
     pub fn read_at(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .map(|document| Self::parse(&document))
-            .unwrap_or_default()
+        let origin = path.display().to_string();
+        match std::fs::read_to_string(path) {
+            Ok(document) => Self::parse(&origin, &document),
+            Err(error) => Self {
+                origin,
+                servers: BTreeMap::new(),
+                unreadable: Some(error.to_string()),
+            },
+        }
     }
 
     #[must_use]
-    /// Parse a rendered registry document.
+    /// Parse a registry document rendered at `origin`.
     ///
-    /// A document that is not a JSON object, and an entry carrying no
-    /// non-empty `server` string, each yield no mapping -- a name the registry
-    /// cannot address is a name it does not map.
-    pub fn parse(document: &str) -> Self {
+    /// A document that is not a JSON object is UNREADABLE, not empty: the host
+    /// rendered something the published contract does not describe, which an
+    /// operator needs told. An entry carrying no non-empty `server` string
+    /// simply yields no mapping -- a name the registry cannot address is a
+    /// name it does not map.
+    pub fn parse(origin: &str, document: &str) -> Self {
         let Ok(serde_json::Value::Object(entries)) =
             serde_json::from_str::<serde_json::Value>(document)
         else {
-            return Self::default();
+            return Self {
+                origin: origin.to_owned(),
+                servers: BTreeMap::new(),
+                unreadable: Some(
+                    "it is not a JSON object mapping factory names to {server, docker_host}"
+                        .to_owned(),
+                ),
+            };
         };
         Self {
+            origin: origin.to_owned(),
             servers: entries
                 .iter()
                 .filter_map(|(name, entry)| {
@@ -76,12 +98,31 @@ impl FactoryRegistry {
                         .map(|server| (name.clone(), server.to_owned()))
                 })
                 .collect(),
+            unreadable: None,
         }
     }
 
-    #[must_use]
-    /// Return the Fabro server this registry maps `name` to, if any.
-    pub fn server(&self, name: &str) -> Option<&str> {
-        self.servers.get(name).map(String::as_str)
+    /// Resolve a registry-backed factory NAME to the Fabro server that answers
+    /// for it.
+    ///
+    /// # Errors
+    /// Returns the reason the name has no address -- naming the factory and
+    /// the registry that failed to answer for it -- so the console can report
+    /// the factory as unresolvable instead of dropping it.
+    pub fn resolve(&self, name: &str) -> Result<&str, String> {
+        if let Some(detail) = &self.unreadable {
+            return Err(format!(
+                "factory `{name}` names no machine, and the host factory registry {} \
+                 cannot be read: {detail}",
+                self.origin
+            ));
+        }
+        self.servers.get(name).map(String::as_str).ok_or_else(|| {
+            format!(
+                "factory `{name}` names no machine, and the host factory registry {} \
+                 maps no server to that name",
+                self.origin
+            )
+        })
     }
 }

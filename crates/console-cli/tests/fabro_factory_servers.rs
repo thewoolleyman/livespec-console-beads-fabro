@@ -14,7 +14,16 @@
 //! orphaned-run detection, run staleness) rested on a source that could never
 //! return data.
 //!
-//! Both tests here drive the PRODUCTION path -- the argv
+//! `livespec-console-beads-fabro-x6o6pl` is the same blindness reached by a
+//! second road. Coordinator rulings R318/R320 make every committed factory
+//! entry REGISTRY-BACKED -- `"registry": true`, naming no machine -- so a
+//! console that keeps only entries carrying a committed `server` resolves ZERO
+//! factories against the committed table and falls straight back to the
+//! localhost default. The last two tests here cover both halves of resolving
+//! through the host-rendered registry: the address it maps a name to, and the
+//! named refusal when it maps none.
+//!
+//! Every test here drives the PRODUCTION path -- the argv
 //! `live_source_adapters_with_programs` actually builds from a real
 //! `BackingCliResolution` over a real `.livespec.jsonc` on disk, polled through
 //! the real ingestion and projected by the real header tally. A test that
@@ -400,6 +409,77 @@ fn a_registry_backed_factory_is_polled_at_the_server_the_registry_maps_it_to() -
         "the registry-resolved factory's run must land, attributed to the \
          factory NAME the committed table declares"
     );
+
+    Ok(())
+}
+
+/// `livespec-console-beads-fabro-x6o6pl`: a registry-backed factory the
+/// registry cannot resolve is reported UNRESOLVABLE BY NAME.
+///
+/// The failure this guards against is silent, which is what makes it
+/// dangerous: dropping the entry empties the factory table, and an empty
+/// factory table is exactly the signal the Fabro source reads as "this host
+/// runs a local fabro server", sending it back to `http://127.0.0.1:32276`.
+/// The console would then show one healthy-looking `fabro` row while observing
+/// nothing at all.
+#[test]
+fn a_factory_the_registry_cannot_resolve_is_reported_unresolvable_by_name() -> TestResult {
+    // The three ways the registry can fail to answer for `legacy`, per the
+    // Definition of Done: absent, unreadable, and rendered-but-silent on that
+    // name.
+    let cases: [(&str, Option<&str>); 3] = [
+        ("absent", None),
+        ("unreadable", Some("{ not a registry at all")),
+        (
+            "name-not-declared",
+            Some(r#"{"spare": {"server": "https://spare.example:32276"}}"#),
+        ),
+    ];
+
+    for (label, rendered) in cases {
+        let repo_path =
+            temp_checkout_with(&format!("registry-{label}"), &registry_backed_config_text())?;
+        let registry_path = repo_path.join("fabro-factories.json");
+        if let Some(body) = rendered {
+            std::fs::write(&registry_path, body)
+                .map_err(|error| format!("write the {label} registry: {error}"))?;
+        }
+        let probe = FactoryProbe::new(BTreeMap::new());
+
+        let (adapter_ids, store) = poll_once(
+            &probe,
+            &resolution_with_registry(&repo_path, Some(&registry_path))?,
+        )?;
+
+        assert!(
+            adapter_ids.contains(&format!("fabro:legacy:{REPO}")),
+            "[{label}] the factory must keep its own named source adapter so the \
+             operator reads WHICH factory went unresolved; got {adapter_ids:?}"
+        );
+        assert!(
+            !adapter_ids.contains(&format!("fabro:{REPO}")),
+            "[{label}] an unresolvable factory must NOT collapse the table into \
+             the unqualified fabro source, which polls the CLI's localhost \
+             default; got {adapter_ids:?}"
+        );
+        assert!(
+            probe.fabro_commands().is_empty(),
+            "[{label}] there is no address to poll `legacy` at, so the console \
+             must run no fabro command rather than fall back to 127.0.0.1; \
+             got {:?}",
+            probe.fabro_commands()
+        );
+
+        let events = store
+            .list_console_events()
+            .map_err(|error| format!("[{label}] read the event log: {error:?}"))?;
+        let unavailable = build_tui_model(&events, 0).unavailable_sources().to_vec();
+        assert!(
+            unavailable.iter().any(|source| source == "fabro:legacy"),
+            "[{label}] the unresolvable factory must be reported BY NAME; \
+             got {unavailable:?}"
+        );
+    }
 
     Ok(())
 }

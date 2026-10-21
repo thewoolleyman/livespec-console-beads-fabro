@@ -2210,6 +2210,19 @@ pub enum SourceObservationPlan {
         /// Host filesystem path to read for the observation.
         path: String,
     },
+    /// A source instance that exists but has NO address to observe, carrying
+    /// the honest reason why.
+    ///
+    /// The alternative -- leaving such an instance out of the adapter set
+    /// entirely -- is what turns a configuration gap into silence: the
+    /// instance disappears from the header tally and the operator reads a
+    /// screen that reports nothing wrong while observing nothing at all. An
+    /// instance that cannot be addressed is UNAVAILABLE, by name, on every
+    /// poll.
+    Unresolvable {
+        /// Why this source instance has no address to observe.
+        detail: String,
+    },
 }
 
 impl SourceObservationPlan {
@@ -2227,6 +2240,14 @@ impl SourceObservationPlan {
     pub fn file(path: &str) -> Self {
         Self::File {
             path: path.to_owned(),
+        }
+    }
+
+    #[must_use]
+    /// Return the unresolvable value.
+    pub fn unresolvable(detail: &str) -> Self {
+        Self::Unresolvable {
+            detail: detail.to_owned(),
         }
     }
 }
@@ -2419,6 +2440,12 @@ impl<'a> ObservedSourceAdapter<'a> {
                 self.probe.run_command(program, &arg_refs)
             }
             SourceObservationPlan::File { path } => self.probe.read_file(path),
+            // Nothing to probe: the instance is known to exist and known to
+            // have no address, so it reports unavailable on its own terms
+            // rather than being polled at somebody's default.
+            SourceObservationPlan::Unresolvable { detail } => {
+                SourceProbeOutcome::unavailable(detail)
+            }
         }
     }
 
@@ -4653,6 +4680,32 @@ mod tests {
                 path: "/tmp/journal.jsonl".to_owned(),
             }
         );
+        assert_eq!(
+            SourceObservationPlan::unresolvable("factory `legacy` names no machine"),
+            SourceObservationPlan::Unresolvable {
+                detail: "factory `legacy` names no machine".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_plan_reports_unavailable_without_probing_anything() {
+        // A source instance with no address must never be probed at somebody
+        // else's default -- it is unavailable on its own terms, by name, and
+        // the probe is not consulted at all.
+        let probe = StubProbe::command(SourceProbeOutcome::observed("work-1", true));
+        let adapter = ok_observed_source_adapter(ObservedSourceAdapter::new(
+            &probe,
+            SourceAdapterKind::Orchestrator,
+            "console",
+            SourceObservationPlan::unresolvable("factory `legacy` names no machine"),
+            stub_normalize,
+        ));
+
+        let poll = ok_adapter_poll(adapter.poll(&ok_adapter_poll_request(cold_request())));
+
+        assert_not_observed(&poll, "factory `legacy` names no machine");
+        assert!(probe.calls.borrow().is_empty(), "nothing to probe");
     }
 
     #[test]

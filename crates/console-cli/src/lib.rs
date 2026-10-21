@@ -89,7 +89,9 @@ pub use backing_cli::{
     PluginResolution, ResolveInputs, python_normalized_invocation, resolve_console_invoker,
 };
 pub use factory_registry::{FACTORY_REGISTRY_PATH, FactoryRegistry};
-pub use factory_servers::{FactoryServer, factory_servers_at, parse_factory_servers};
+pub use factory_servers::{
+    FactoryAddress, FactoryServer, factory_servers_at, parse_factory_servers,
+};
 pub use source_poller::{SourcePollHost, SourcePollWake, run_paced_source_poll_loop};
 pub use source_probe_diagnostics::{
     bounded_diagnostic_text, describe_command_failure, redact_secret_env_values,
@@ -1933,6 +1935,12 @@ type SourceAdapterSpec = (
 /// source on the CLI's own default endpoint — the right behavior for a host that
 /// genuinely runs a local fabro server, and the only honest thing to do when
 /// there is no configuration naming a remote one.
+///
+/// A factory the config DOES declare but the console cannot address — a
+/// registry-backed entry the host registry does not answer for — is NOT that
+/// case, and must never reach it: it keeps its own named instance and reports
+/// unresolvable, because collapsing back to the unqualified source would
+/// re-arm the localhost default under the appearance of a configured console.
 fn fabro_source_specs(programs: &BackingCliPrograms) -> Vec<SourceAdapterSpec> {
     if programs.factory_servers().is_empty() {
         return vec![(
@@ -1951,10 +1959,15 @@ fn fabro_source_specs(programs: &BackingCliPrograms) -> Vec<SourceAdapterSpec> {
                 format!("fabro:{}", factory.name()),
                 SourceAdapterKind::Fabro,
                 Some(factory.name().to_owned()),
-                SourceObservationPlan::command(
-                    programs.fabro(),
-                    &["ps", "--json", "--server", factory.server()],
-                ),
+                match factory.address() {
+                    FactoryAddress::Server(server) => SourceObservationPlan::command(
+                        programs.fabro(),
+                        &["ps", "--json", "--server", server],
+                    ),
+                    FactoryAddress::Unresolvable(reason) => {
+                        SourceObservationPlan::unresolvable(reason)
+                    }
+                },
                 parse_fabro_observation as NormalizeObservation,
             )
         })
@@ -4412,7 +4425,7 @@ mod tests {
         CommandLaneFailure, CommandLaneReporter, CommandLaneSteps,
         CompatibilityNotWiredDispatchItemPort, ConsoleLane, ConsoleRuntimeError,
         ConsoleRuntimeResult, DoctorRunResult, ErroringPullSource, EventAppendStore,
-        FACTORY_REGISTRY_PATH, FactoryCommandStore, FactoryRegistry, FactoryServer,
+        FACTORY_REGISTRY_PATH, FactoryAddress, FactoryCommandStore, FactoryRegistry, FactoryServer,
         InitialSourceSeed, LANE_FAILURE_MARKER, LANE_TIME_UNKNOWN, LaneStartupStage,
         MAX_TRANSIENT_STATUS_CHARS, NEEDS_ATTENTION_PROGRAM_ENV, NeedsAttentionIngest,
         PROGRAM_OVERRIDE_ENV_VARS, PendingCommandOutcome, PendingCommandRequester,
@@ -11861,49 +11874,88 @@ mod tests {
 }
 "#;
 
-    /// A registry that maps nothing -- what a console host that dispatches
-    /// nothing, and therefore renders no registry, resolves to.
+    /// Where the lib tests pretend the host rendered its registry.
+    const TEST_REGISTRY_ORIGIN: &str = "/etc/livespec/fabro-factories.json";
+
+    /// A READABLE registry that maps nothing -- what a console host that
+    /// dispatches nothing renders.
     fn no_registry() -> FactoryRegistry {
-        FactoryRegistry::default()
+        FactoryRegistry::parse(TEST_REGISTRY_ORIGIN, "{}")
+    }
+
+    fn test_registry() -> FactoryRegistry {
+        FactoryRegistry::parse(TEST_REGISTRY_ORIGIN, FACTORY_REGISTRY)
+    }
+
+    /// The reason a registry refusal carries, as a plain string.
+    fn registry_refusal(registry: &FactoryRegistry, name: &str) -> String {
+        registry.resolve(name).err().unwrap_or_default()
+    }
+
+    /// Does this factory carry an address the console can poll, or else say
+    /// BY NAME that it has none?
+    ///
+    /// Either answer is well-formed; what must never happen is a factory that
+    /// gives neither, because such an entry is dropped and a dropped entry
+    /// re-arms the fabro CLI's localhost default. Which branch the REAL
+    /// committed table takes depends on the host-rendered registry, so the
+    /// ground-truth test below asserts this predicate rather than a variant.
+    fn addressed_or_named_unresolvable(factory: &FactoryServer) -> bool {
+        match factory.address() {
+            FactoryAddress::Server(server) => server.contains("://"),
+            FactoryAddress::Unresolvable(reason) => reason.contains(factory.name()),
+        }
     }
 
     #[test]
-    fn the_factory_registry_maps_only_names_it_can_address() {
-        let registry = FactoryRegistry::parse(FACTORY_REGISTRY);
+    fn the_factory_registry_resolves_only_names_it_can_address() {
+        let registry = test_registry();
 
         check(
-            (registry.server("legacy")) == (Some("https://legacy.example:32276")),
-            "the registry must map a factory name to the server it declares",
+            (registry.resolve("legacy")) == (Ok("https://legacy.example:32276")),
+            "the registry must resolve a factory name to the server it declares",
         );
         for unaddressable in ["blank", "typed", "absent", "never-rendered"] {
+            let refusal = registry_refusal(&registry, unaddressable);
             check(
-                registry.server(unaddressable).is_none(),
-                "a name the registry cannot address is a name it does not map",
+                refusal.contains(unaddressable)
+                    && refusal.contains(TEST_REGISTRY_ORIGIN)
+                    && refusal.contains("maps no server to that name"),
+                "a name the registry cannot address must be refused BY NAME, \
+                 naming the registry that failed to answer",
             );
         }
     }
 
     #[test]
-    fn the_factory_registry_is_empty_when_the_host_rendered_none() {
+    fn an_unreadable_factory_registry_refuses_every_name_and_says_why() {
         let temp = resolver_temp_root("factory-registry-absent");
         fs::create_dir_all(&temp).ok_test();
+        let never_rendered = temp.join("never-rendered.json");
 
-        // Absent, and present-but-uninterpretable, both read as mapping
-        // nothing: a console host that dispatches nothing renders no registry
-        // and must still start.
+        // Absent, and present-but-uninterpretable, are both UNREADABLE: the
+        // console must still start, and must still be able to say why `legacy`
+        // has no address.
+        let absent = registry_refusal(&FactoryRegistry::read_at(&never_rendered), "legacy");
         check(
-            (FactoryRegistry::read_at(&temp.join("never-rendered.json")))
-                == (FactoryRegistry::default()),
-            "an unreadable registry must map nothing",
+            absent.contains("legacy")
+                && absent.contains(&never_rendered.display().to_string())
+                && absent.contains("cannot be read"),
+            "an absent registry must refuse by name, naming the path it was \
+             looked for at",
         );
-        check(
-            (FactoryRegistry::parse("{ not json at all")) == (FactoryRegistry::default()),
-            "assert_eq failed",
-        );
-        check(
-            (FactoryRegistry::parse(r#"["legacy"]"#)) == (FactoryRegistry::default()),
-            "a registry that is not a JSON object maps nothing",
-        );
+        for malformed in ["{ not json at all", r#"["legacy"]"#] {
+            let refusal = registry_refusal(
+                &FactoryRegistry::parse(TEST_REGISTRY_ORIGIN, malformed),
+                "legacy",
+            );
+            check(
+                refusal.contains("cannot be read")
+                    && refusal.contains("not a JSON object mapping factory names"),
+                "a registry the published contract does not describe is \
+                 unreadable, not empty",
+            );
+        }
     }
 
     #[test]
@@ -11914,8 +11966,8 @@ mod tests {
         fs::write(&rendered, FACTORY_REGISTRY).ok_test();
 
         check(
-            (FactoryRegistry::read_at(&rendered).server("legacy"))
-                == (Some("https://legacy.example:32276")),
+            (FactoryRegistry::read_at(&rendered).resolve("legacy"))
+                == (Ok("https://legacy.example:32276")),
             "assert_eq failed",
         );
     }
@@ -11926,7 +11978,7 @@ mod tests {
         // address `legacy` can be polled at is the registry's.
         let factories = parse_factory_servers(
             r#"{"dispatcher": {"factories": {"legacy": {"registry": true}}}}"#,
-            &FactoryRegistry::parse(FACTORY_REGISTRY),
+            &test_registry(),
         );
 
         check(
@@ -11936,12 +11988,36 @@ mod tests {
     }
 
     #[test]
+    fn a_registry_backed_factory_the_registry_cannot_answer_for_is_kept_unresolvable() {
+        // KEPT, not dropped: dropping it empties the factory table, and an
+        // empty table is what re-arms the fabro CLI's localhost default.
+        let factories = parse_factory_servers(
+            r#"{"dispatcher": {"factories": {"unmapped": {"registry": true}}}}"#,
+            &test_registry(),
+        );
+
+        check(
+            (factories)
+                == (vec![FactoryServer::unresolvable(
+                    "unmapped",
+                    &registry_refusal(&test_registry(), "unmapped"),
+                )]),
+            "the factory must be KEPT, under its own name, carrying the reason \
+             it has no address",
+        );
+        check(
+            factories.iter().all(addressed_or_named_unresolvable),
+            "a kept-but-unresolvable factory names itself in its reason",
+        );
+    }
+
+    #[test]
     fn a_committed_server_wins_over_the_registry_for_the_same_name() {
         // Entries that still carry a server keep resolving exactly as before,
         // registry or no registry.
         let factories = parse_factory_servers(
             r#"{"dispatcher": {"factories": {"legacy": {"registry": true, "server": "https://committed.example:32276"}}}}"#,
-            &FactoryRegistry::parse(FACTORY_REGISTRY),
+            &test_registry(),
         );
 
         check(
@@ -11961,12 +12037,16 @@ mod tests {
         check((factories.len()) == (2), "assert_eq failed");
         check((factories[0].name()) == ("hp"), "assert_eq failed");
         check(
-            (factories[0].server()) == ("https://hp-xubuntu.perch-rudd.ts.net:32276"),
+            (factories[0].address())
+                == (&FactoryAddress::Server(
+                    "https://hp-xubuntu.perch-rudd.ts.net:32276".to_owned(),
+                )),
             "a comment stripper that is not string-aware truncates the URL at its //",
         );
         check((factories[1].name()) == ("vps"), "assert_eq failed");
         check(
-            (factories[1].server()) == ("https://vps.perch-rudd.ts.net:32276"),
+            (factories[1].address())
+                == (&FactoryAddress::Server("https://vps.perch-rudd.ts.net:32276".to_owned())),
             "assert_eq failed",
         );
     }
@@ -12067,7 +12147,7 @@ mod tests {
     }
 
     #[test]
-    fn this_repos_own_config_resolves_its_remote_factories() {
+    fn this_repos_own_config_resolves_every_factory_it_declares_by_name() {
         // Ground truth against the REAL commented config this console runs
         // against, not a fixture: the defect was that the console polled
         // 127.0.0.1 while every configured factory was remote, and a fixture
@@ -12081,11 +12161,20 @@ mod tests {
             "this repo declares dispatcher.factories; resolving none means the \
              console is back on the fabro CLI's localhost default",
         );
+        // WHAT IS NOT ASSERTED, and why: that each entry carries an ADDRESS.
+        // Once the committed table is registry-backed it names no machine, so
+        // whether a name has an address depends on the host-rendered
+        // `/etc/livespec/fabro-factories.json` -- not on anything committed,
+        // and absent on a CI runner. The committed invariant is that every
+        // declared factory survives resolution under its own NAME, with
+        // either an address or a stated reason it has none; an entry that
+        // resolved to NEITHER would have been dropped, and a dropped entry is
+        // what re-arms the localhost default.
         check(
-            factories
-                .iter()
-                .all(|factory| factory.server().contains("://") && !factory.name().is_empty()),
-            "every configured factory must resolve to a named, addressable server",
+            factories.iter().all(|factory| !factory.name().is_empty())
+                && factories.iter().all(addressed_or_named_unresolvable),
+            "every configured factory must resolve to a named, addressable \
+             server, or be named as unresolvable",
         );
     }
 
@@ -12174,6 +12263,47 @@ mod tests {
                     "reconcile-runs:console",
                 ]),
             "assert_eq failed",
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_factory_keeps_its_own_source_and_reports_why() {
+        // A registry-backed table with no rendered registry. The console must
+        // NOT collapse to the single unqualified `fabro` source: that source
+        // polls the CLI's localhost default, and showing it here would report
+        // a healthy-looking console that observes nothing.
+        let temp = resolver_temp_root("fabro-source-specs-unresolvable");
+        let repo = temp.join("repo");
+        fs::create_dir_all(&repo).ok_test();
+        fs::write(
+            repo.join(".livespec.jsonc"),
+            r#"{"dispatcher": {"factories": {"legacy": {"registry": true}}}}"#,
+        )
+        .ok_test();
+        let mut env = resolver_empty_env();
+        env.insert(
+            "LIVESPEC_CONSOLE_FACTORY_REGISTRY_PATH".to_owned(),
+            temp.join("never-rendered.json").display().to_string(),
+        );
+        let resolution = BackingCliResolution::resolve(&resolver_inputs(env, repo, None)).ok_test();
+
+        let specs = fabro_source_specs(resolution.programs());
+
+        check((specs.len()) == (1), "assert_eq failed");
+        check((specs[0].0) == ("fabro:legacy"), "assert_eq failed");
+        check(
+            (specs[0].2.as_deref()) == (Some("legacy")),
+            "the unresolvable factory keeps the instance name its findings are \
+             attributed to",
+        );
+        check(
+            (specs[0].3)
+                == (SourceObservationPlan::unresolvable(&registry_refusal(
+                    &FactoryRegistry::read_at(&temp.join("never-rendered.json")),
+                    "legacy",
+                ))),
+            "the source reports the factory unresolvable, carrying the reason, \
+             rather than polling anything",
         );
     }
 

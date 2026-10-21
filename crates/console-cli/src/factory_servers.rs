@@ -35,35 +35,59 @@ const CONFIG_FILE: &str = ".livespec.jsonc";
 /// only the fallback for a config that declares no plugin at all.
 const DEFAULT_IMPLEMENTATION_PLUGIN: &str = "livespec-orchestrator-beads-fabro";
 
-/// One factory server the Fabro source polls, as `dispatcher.factories`
-/// declares it.
+/// Where the Fabro source addresses one declared factory.
+///
+/// `Unresolvable` is deliberately a factory the console KEEPS rather than one
+/// it drops. A dropped factory is indistinguishable from a config declaring
+/// none, and a config declaring none is exactly the signal the Fabro source
+/// reads as "this host runs a local fabro server" -- so dropping an
+/// unresolvable factory silently re-arms the `http://127.0.0.1:32276` fallback
+/// this module exists to end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactoryAddress {
+    /// The server URL, passed verbatim as `--server`.
+    Server(String),
+    /// Why this factory has no address the console can poll.
+    Unresolvable(String),
+}
+
+/// One factory the Fabro source polls, as `dispatcher.factories` declares it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactoryServer {
     name: String,
-    server: String,
+    address: FactoryAddress,
 }
 
 impl FactoryServer {
     #[must_use]
-    /// Build a factory server record.
+    /// Build a factory addressed at a known server.
     pub fn new(name: &str, server: &str) -> Self {
         Self {
             name: name.to_owned(),
-            server: server.to_owned(),
+            address: FactoryAddress::Server(server.to_owned()),
         }
     }
 
     #[must_use]
-    /// Return the factory's configured NAME (`hp`, `vps`), which names the
-    /// source instance the runs it reports are attributed to.
+    /// Build a factory the console cannot address, carrying why.
+    pub fn unresolvable(name: &str, reason: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            address: FactoryAddress::Unresolvable(reason.to_owned()),
+        }
+    }
+
+    #[must_use]
+    /// Return the factory's configured NAME (`hp`, `vps`, `legacy`), which
+    /// names the source instance the runs it reports are attributed to.
     pub fn name(&self) -> &str {
         &self.name
     }
 
     #[must_use]
-    /// Return the factory's server URL, passed verbatim as `--server`.
-    pub fn server(&self) -> &str {
-        &self.server
+    /// Return where the Fabro source addresses this factory.
+    pub const fn address(&self) -> &FactoryAddress {
+        &self.address
     }
 }
 
@@ -95,8 +119,10 @@ pub fn factory_servers_at(repo_path: &Path, registry_path: &Path) -> Vec<Factory
 /// way resolves. Entries are returned in the config's key order (`serde_json`'s
 /// object map is ordered by key). An entry carrying a non-empty `server` string
 /// is addressed at it; a REGISTRY-BACKED entry (`"registry": true`) is resolved
-/// by NAME through `registry`; anything else is dropped -- a factory the console
-/// cannot address is not one it can poll.
+/// by NAME through `registry`, and KEPT as [`FactoryAddress::Unresolvable`]
+/// when the registry cannot answer for it; anything else is dropped -- a
+/// declaration that neither addresses a server nor claims registry backing
+/// names nothing for the console to report on.
 #[must_use]
 pub fn parse_factory_servers(config: &str, registry: &FactoryRegistry) -> Vec<FactoryServer> {
     let Ok(document) = serde_json::from_str::<serde_json::Value>(&strip_jsonc_comments(config))
@@ -144,9 +170,10 @@ fn factory_server_for(
     {
         return None;
     }
-    registry
-        .server(name)
-        .map(|server| FactoryServer::new(name, server))
+    Some(match registry.resolve(name) {
+        Ok(server) => FactoryServer::new(name, server),
+        Err(reason) => FactoryServer::unresolvable(name, &reason),
+    })
 }
 
 fn factories_in(
