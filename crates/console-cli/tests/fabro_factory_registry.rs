@@ -29,6 +29,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use console_application::build_tui_model;
 use console_application::source_adapters::{
     NeedsAttentionReadOutcome, NeedsAttentionSnapshotPort, PullSourcePort, SourceProbe,
     SourceProbeOutcome,
@@ -279,6 +280,122 @@ fn a_registry_backed_factory_is_polled_at_the_server_the_registry_maps_its_name_
 
     // The run lands, attributed to the factory NAME the registry resolved.
     assert_eq!(observed_run_sources(&store)?, ["fabro:legacy".to_owned()]);
+
+    Ok(())
+}
+
+/// What one poll produced for a registry-backed factory the registry did not
+/// resolve: the adapter ids built, every fabro argv run, the sources the
+/// header counts unavailable, and the persisted not-observed reasons.
+struct UnresolvedCase {
+    adapter_ids: Vec<String>,
+    fabro_commands: Vec<Vec<String>>,
+    unavailable: Vec<String>,
+    reasons: Vec<String>,
+}
+
+/// Poll the registry-backed config once against a registry in the given state
+/// (`None` renders no registry file at all).
+fn unresolved_case(label: &str, registry: Option<&str>) -> Result<UnresolvedCase, String> {
+    let (repo_path, registry_path) = temp_case(label, registry)?;
+    let resolution = resolution_for(&repo_path, &registry_path)?;
+    // Answering at the registry-mapped server anyway: if the console somehow
+    // still reaches an endpoint, the assertions below say which one.
+    let probe = RegistryProbe::new(BTreeMap::from([(
+        LEGACY_SERVER.to_owned(),
+        SourceProbeOutcome::observed(
+            &fabro_run_stdout("01M5LEGACYRUNBBBBBBBBBBBBB", "wi-legacy"),
+            true,
+        ),
+    )]));
+
+    let (adapter_ids, store) = poll_once(&probe, &resolution)?;
+
+    let events = store
+        .list_console_events()
+        .map_err(|error| format!("read the event log: {error:?}"))?;
+    let reasons = events
+        .iter()
+        .filter(|event| {
+            event.event_type().contract_name() == "source.not_observed_finding_observed"
+                && event.source() == "fabro:legacy"
+        })
+        .map(|event| event.payload_json().to_owned())
+        .collect();
+    Ok(UnresolvedCase {
+        adapter_ids,
+        fabro_commands: probe.fabro_commands(),
+        unavailable: build_tui_model(&events, 0).unavailable_sources().to_vec(),
+        reasons,
+    })
+}
+
+/// A registry-backed factory the registry does not resolve is reported
+/// UNRESOLVABLE BY NAME -- never silently polled at the fabro CLI's
+/// `http://127.0.0.1:32276` default, which is the cockpit-blindness this whole
+/// module exists to prevent.
+///
+/// All three ways a registry can fail to resolve a name are the same outcome:
+/// the file is absent, it is there but uninterpretable, or it is rendered fine
+/// and simply binds some other name.
+#[test]
+fn a_registry_that_does_not_resolve_the_name_reports_the_factory_unresolvable() -> TestResult {
+    let cases = [
+        ("registry-absent", None),
+        ("registry-uninterpretable", Some("{ not json at all")),
+        (
+            "registry-without-the-name",
+            Some(r#"{"spare": {"server": "https://spare-host.example:32276"}}"#),
+        ),
+    ];
+
+    for (label, registry) in cases {
+        let case = unresolved_case(label, registry)?;
+
+        // The factory keeps its own named source instance, so the operator sees
+        // WHICH factory went dark rather than a silently shorter list.
+        assert!(
+            case.adapter_ids.contains(&format!("fabro:legacy:{REPO}")),
+            "[{label}] an unresolvable factory is still named; got {:?}",
+            case.adapter_ids
+        );
+        // THE DEFECT: dropping the entry leaves the factory table empty, and an
+        // empty table puts the unqualified `fabro ps --json` back on the CLI's
+        // localhost default.
+        assert!(
+            !case.adapter_ids.contains(&format!("fabro:{REPO}")),
+            "[{label}] an unresolvable factory must NOT fall back to the \
+             unqualified localhost-default fabro source; got {:?}",
+            case.adapter_ids
+        );
+        assert!(
+            case.fabro_commands.is_empty(),
+            "[{label}] a factory with no resolved address must not be polled at \
+             any endpoint; got {:?}",
+            case.fabro_commands
+        );
+
+        // It is reported unavailable BY NAME, with an honest reason naming the
+        // factory and the registry it could not be resolved from.
+        assert!(
+            case.unavailable.contains(&"fabro:legacy".to_owned()),
+            "[{label}] the unresolvable factory must be reported by name; got {:?}",
+            case.unavailable
+        );
+        assert!(
+            !case.unavailable.contains(&"fabro".to_owned()),
+            "[{label}] the unqualified fabro source must not appear at all; got {:?}",
+            case.unavailable
+        );
+        assert!(
+            !case.reasons.is_empty()
+                && case.reasons.iter().all(|payload| payload.contains("legacy")
+                    && payload.contains("fabro-factories.json")),
+            "[{label}] the persisted reason must name the factory and the \
+             registry it was not resolved from; got {:?}",
+            case.reasons
+        );
+    }
 
     Ok(())
 }

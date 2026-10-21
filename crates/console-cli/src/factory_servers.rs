@@ -37,35 +37,61 @@ const CONFIG_FILE: &str = ".livespec.jsonc";
 /// only the fallback for a config that declares no plugin at all.
 const DEFAULT_IMPLEMENTATION_PLUGIN: &str = "livespec-orchestrator-beads-fabro";
 
-/// One factory server the Fabro source polls, as `dispatcher.factories`
+/// Where a declared factory resolved to, or why it did not.
+///
+/// An unresolvable factory is NOT dropped. Dropping it empties the factory
+/// table, and an empty table puts the Fabro source back on the single
+/// unqualified `fabro ps --json` at the CLI's `http://127.0.0.1:32276`
+/// default -- a silent poll of an endpoint nobody configured, which reads at
+/// the cockpit exactly like a healthy factory with no runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactoryAddress {
+    /// The server the Fabro source polls this factory at, passed verbatim as
+    /// `--server`.
+    Server(String),
+    /// The honest reason this factory has no address, reported against its
+    /// own named source instance instead of being polled anywhere.
+    Unresolvable(String),
+}
+
+/// One factory the Fabro source knows about, as `dispatcher.factories`
 /// declares it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactoryServer {
     name: String,
-    server: String,
+    address: FactoryAddress,
 }
 
 impl FactoryServer {
     #[must_use]
-    /// Build a factory server record.
+    /// Build a factory addressed at `server`.
     pub fn new(name: &str, server: &str) -> Self {
         Self {
             name: name.to_owned(),
-            server: server.to_owned(),
+            address: FactoryAddress::Server(server.to_owned()),
         }
     }
 
     #[must_use]
-    /// Return the factory's configured NAME (`hp`, `vps`), which names the
-    /// source instance the runs it reports are attributed to.
+    /// Build a factory that has no address, carrying the reason why.
+    pub fn unresolvable(name: &str, reason: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            address: FactoryAddress::Unresolvable(reason.to_owned()),
+        }
+    }
+
+    #[must_use]
+    /// Return the factory's configured NAME (`hp`, `vps`, `legacy`), which
+    /// names the source instance the runs it reports are attributed to.
     pub fn name(&self) -> &str {
         &self.name
     }
 
     #[must_use]
-    /// Return the factory's server URL, passed verbatim as `--server`.
-    pub fn server(&self) -> &str {
-        &self.server
+    /// Return where this factory resolved to, or why it did not.
+    pub const fn address(&self) -> &FactoryAddress {
+        &self.address
     }
 }
 
@@ -97,9 +123,11 @@ pub fn factory_servers_at(repo_path: &Path, registry: &FactoryRegistry) -> Vec<F
 /// object map is ordered by key).
 ///
 /// An entry declaring `"registry": true` is REGISTRY-BACKED and resolves BY
-/// NAME through `registry`. Any other entry resolves from its own committed
-/// `server`, and one carrying no non-empty `server` string is dropped -- a
-/// factory the console cannot address is not one it can poll.
+/// NAME through `registry`; a name the registry does not bind yields an
+/// [`FactoryAddress::Unresolvable`] factory, reported by name rather than
+/// dropped. Any other entry resolves from its own committed `server`, and one
+/// carrying no non-empty `server` string IS dropped -- it is not registry-backed
+/// and names no machine, so there is nothing to report it against.
 #[must_use]
 pub fn parse_factory_servers(config: &str, registry: &FactoryRegistry) -> Vec<FactoryServer> {
     let Ok(document) = serde_json::from_str::<serde_json::Value>(&strip_jsonc_comments(config))
@@ -132,9 +160,10 @@ fn resolve_factory(
     registry: &FactoryRegistry,
 ) -> Option<FactoryServer> {
     if is_registry_backed(declaration) {
-        return registry
-            .server_for(name)
-            .map(|server| FactoryServer::new(name, server));
+        return Some(registry.resolve(name).map_or_else(
+            |reason| FactoryServer::unresolvable(name, &reason),
+            |server| FactoryServer::new(name, server),
+        ));
     }
     committed_server(declaration).map(|server| FactoryServer::new(name, server))
 }
