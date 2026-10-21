@@ -14,8 +14,15 @@
 //! dispatcher actually uses. It is READ-ONLY over the config file; the console
 //! never writes `.livespec.jsonc` (every setting change goes through the
 //! orchestrator's published `drive` action surface).
+//!
+//! A declaration need not carry a `server` at all. A REGISTRY-BACKED entry
+//! (`"registry": true`) deliberately names no machine, and is resolved by NAME
+//! through the host-rendered factory registry
+//! ([`crate::factory_registry`]) instead.
 
 use std::path::Path;
+
+use crate::factory_registry::FactoryRegistry;
 
 /// The orchestrator's per-repo configuration file, relative to the repo root.
 const CONFIG_FILE: &str = ".livespec.jsonc";
@@ -61,7 +68,8 @@ impl FactoryServer {
 }
 
 /// Read the factory servers declared by the selected repo checkout's
-/// `.livespec.jsonc`.
+/// `.livespec.jsonc`, resolving registry-backed entries through the registry
+/// the host rendered at `registry_path`.
 ///
 /// An unreadable or uninterpretable config yields an EMPTY list rather than an
 /// error: the console must still start and poll every other source on a checkout
@@ -69,10 +77,13 @@ impl FactoryServer {
 /// non-governed repo). The Fabro source then falls back to the CLI's own default
 /// endpoint, which is correct for a host that genuinely runs a local fabro
 /// server.
+///
+/// The registry is read only when the config is, so a checkout declaring no
+/// factories costs no registry read.
 #[must_use]
-pub fn factory_servers_at(repo_path: &Path) -> Vec<FactoryServer> {
+pub fn factory_servers_at(repo_path: &Path, registry_path: &Path) -> Vec<FactoryServer> {
     std::fs::read_to_string(repo_path.join(CONFIG_FILE))
-        .map(|config| parse_factory_servers(&config))
+        .map(|config| parse_factory_servers(&config, &FactoryRegistry::read_at(registry_path)))
         .unwrap_or_default()
 }
 
@@ -82,10 +93,12 @@ pub fn factory_servers_at(repo_path: &Path) -> Vec<FactoryServer> {
 /// (`<implementation.plugin>.dispatcher.factories`, where a governed repo
 /// actually declares them) and then at the top level, so a config written either
 /// way resolves. Entries are returned in the config's key order (`serde_json`'s
-/// object map is ordered by key), and an entry with no non-empty `server` string
-/// is dropped -- a factory the console cannot address is not one it can poll.
+/// object map is ordered by key). An entry carrying a non-empty `server` string
+/// is addressed at it; a REGISTRY-BACKED entry (`"registry": true`) is resolved
+/// by NAME through `registry`; anything else is dropped -- a factory the console
+/// cannot address is not one it can poll.
 #[must_use]
-pub fn parse_factory_servers(config: &str) -> Vec<FactoryServer> {
+pub fn parse_factory_servers(config: &str, registry: &FactoryRegistry) -> Vec<FactoryServer> {
     let Ok(document) = serde_json::from_str::<serde_json::Value>(&strip_jsonc_comments(config))
     else {
         return Vec::new();
@@ -104,14 +117,36 @@ pub fn parse_factory_servers(config: &str) -> Vec<FactoryServer> {
     };
     factories
         .iter()
-        .filter_map(|(name, declaration)| {
-            declaration
-                .get("server")
-                .and_then(serde_json::Value::as_str)
-                .filter(|server| !server.trim().is_empty())
-                .map(|server| FactoryServer::new(name, server.trim()))
-        })
+        .filter_map(|(name, declaration)| factory_server_for(name, declaration, registry))
         .collect()
+}
+
+/// Resolve ONE `dispatcher.factories` declaration to the factory the Fabro
+/// source polls, or to nothing when the declaration addresses no server and
+/// claims no registry backing.
+fn factory_server_for(
+    name: &str,
+    declaration: &serde_json::Value,
+    registry: &FactoryRegistry,
+) -> Option<FactoryServer> {
+    if let Some(server) = declaration
+        .get("server")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|server| !server.is_empty())
+    {
+        return Some(FactoryServer::new(name, server));
+    }
+    if declaration
+        .get("registry")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        return None;
+    }
+    registry
+        .server(name)
+        .map(|server| FactoryServer::new(name, server))
 }
 
 fn factories_in(

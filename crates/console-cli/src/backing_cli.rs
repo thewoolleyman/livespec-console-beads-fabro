@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::factory_registry::FACTORY_REGISTRY_PATH;
 use crate::factory_servers::{FactoryServer, factory_servers_at};
 
 const ORCHESTRATOR_PLUGIN_NAME: &str = "livespec-orchestrator-beads-fabro";
@@ -28,6 +29,15 @@ const DRIVE_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_DRIVE_PROGRAM";
 pub const NEEDS_ATTENTION_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM";
 const GH_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_GH_PROGRAM";
 const INVOKER_ENV: &str = "LIVESPEC_INVOKER";
+/// Points the console at a non-default rendering of the host factory registry.
+///
+/// Deliberately NOT a `*_PROGRAM` override: the registry is a host-rendered
+/// FILE, not a backing CLI, so it is absent from [`PROGRAM_OVERRIDE_ENV_VARS`]
+/// and the E2E harness derives no stub for it. It exists so the registry path
+/// is injected rather than read from a hidden global, and so a host that
+/// renders the fleet registry somewhere other than [`FACTORY_REGISTRY_PATH`]
+/// can say so.
+const FACTORY_REGISTRY_PATH_ENV: &str = "LIVESPEC_CONSOLE_FACTORY_REGISTRY_PATH";
 
 /// Every `LIVESPEC_CONSOLE_*_PROGRAM` override env var this module honors.
 ///
@@ -228,7 +238,10 @@ impl BackingCliResolution {
         // The factory servers `fabro` is addressed at come from the SELECTED
         // repo's orchestrator config, so the console polls the same factories
         // the Dispatcher dispatches to rather than the CLI's localhost default.
-        programs.factory_servers = factory_servers_at(&selected_repo_path);
+        // A registry-backed entry names no machine, so its address comes from
+        // the registry the dispatching host rendered.
+        programs.factory_servers =
+            factory_servers_at(&selected_repo_path, &factory_registry_path(&inputs.env));
         apply_program_overrides(&inputs.env, &mut programs);
         Ok(Self {
             selected_repo_path,
@@ -418,6 +431,15 @@ fn selected_repo_path(inputs: &ResolveInputs) -> PathBuf {
         .env
         .get(SELECTED_REPO_PATH_ENV)
         .map_or_else(|| inputs.current_dir.clone(), PathBuf::from)
+}
+
+/// Where this host rendered the fleet factory registry: the override when one
+/// is set to a non-blank value, else the published default.
+fn factory_registry_path(env: &BTreeMap<String, String>) -> PathBuf {
+    env.get(FACTORY_REGISTRY_PATH_ENV)
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .map_or_else(|| PathBuf::from(FACTORY_REGISTRY_PATH), PathBuf::from)
 }
 
 fn resolve_plugin_root(

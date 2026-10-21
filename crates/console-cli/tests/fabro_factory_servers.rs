@@ -43,6 +43,13 @@ type TestResult = Result<(), String>;
 const REPO: &str = "livespec-console-beads-fabro";
 const HP_SERVER: &str = "https://hp-xubuntu.perch-rudd.ts.net:32276";
 const VPS_SERVER: &str = "https://vps.perch-rudd.ts.net:32276";
+/// The server the host-rendered factory registry maps the `legacy` factory to.
+/// It appears NOWHERE in the committed config -- the whole point of a
+/// registry-backed entry is that the committed table names no machine.
+const LEGACY_SERVER: &str = "https://legacy-from-the-registry.perch-rudd.ts.net:32276";
+/// Points the console at a test-owned rendering of the host factory registry,
+/// standing in for `/etc/livespec/fabro-factories.json`.
+const FACTORY_REGISTRY_PATH_ENV: &str = "LIVESPEC_CONSOLE_FACTORY_REGISTRY_PATH";
 
 /// A `.livespec.jsonc` in the shape a governed repo actually carries: JSONC
 /// comments, and the dispatcher settings nested under the implementation
@@ -70,25 +77,85 @@ fn config_text() -> String {
     )
 }
 
+/// The REGISTRY-BACKED shape coordinator rulings R318/R320 require of every
+/// committed factory table: the entry declares `"registry": true` and carries
+/// no `server` and no `docker_host`, so the committed config names no machine.
+/// Which Fabro server answers for `legacy` is bound only in the host-rendered
+/// registry.
+fn registry_backed_config_text() -> String {
+    r#"{
+  // The console reads this file; it never writes it.
+  "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
+  "livespec-orchestrator-beads-fabro": {
+    "dispatcher": {
+      // Registry-backed: no server, no docker_host, no machine named here.
+      "factories": {
+        "legacy": { "registry": true }
+      },
+      "default_factory": "legacy"
+    }
+  }
+}
+"#
+    .to_owned()
+}
+
 /// A scratch checkout under the crate's own `target/`, unique per test process,
 /// carrying nothing but the orchestrator config the resolver reads.
 fn temp_repo_checkout(label: &str) -> Result<PathBuf, String> {
+    temp_checkout_with(label, &config_text())
+}
+
+/// The same scratch checkout, carrying an explicitly supplied config body.
+fn temp_checkout_with(label: &str, config: &str) -> Result<PathBuf, String> {
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp-factory-servers");
     let path = base.join(format!("{label}-{}", std::process::id()));
     let _ignored = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path)
         .map_err(|error| format!("create scratch dir {}: {error}", path.display()))?;
-    std::fs::write(path.join(".livespec.jsonc"), config_text())
+    std::fs::write(path.join(".livespec.jsonc"), config)
         .map_err(|error| format!("write .livespec.jsonc: {error}"))?;
     Ok(path)
 }
 
+/// Render a test-owned stand-in for `/etc/livespec/fabro-factories.json`, in
+/// the shape the fleet gitops inventory publishes: factory NAME to
+/// `{server, optional docker_host}`.
+fn write_factory_registry(repo_path: &Path) -> Result<PathBuf, String> {
+    let path = repo_path.join("fabro-factories.json");
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{
+  "legacy": {{ "server": "{LEGACY_SERVER}", "docker_host": "ssh://legacy.example" }},
+  "spare": {{ "server": "https://spare.example:32276" }}
+}}
+"#
+        ),
+    )
+    .map_err(|error| format!("write the factory registry: {error}"))?;
+    Ok(path)
+}
+
 fn resolution_for(repo_path: &Path) -> Result<BackingCliResolution, String> {
+    resolution_with_registry(repo_path, None)
+}
+
+fn resolution_with_registry(
+    repo_path: &Path,
+    registry_path: Option<&Path>,
+) -> Result<BackingCliResolution, String> {
     let mut env = BTreeMap::new();
     env.insert(
         "LIVESPEC_CONSOLE_REPO_PATH".to_owned(),
         repo_path.display().to_string(),
     );
+    if let Some(registry_path) = registry_path {
+        env.insert(
+            FACTORY_REGISTRY_PATH_ENV.to_owned(),
+            registry_path.display().to_string(),
+        );
+    }
     BackingCliResolution::resolve(&ResolveInputs {
         env,
         current_dir: repo_path.to_path_buf(),
@@ -280,6 +347,58 @@ fn the_fabro_source_polls_every_configured_factory_at_an_explicit_server() -> Te
         run_sources.iter().any(|source| source == "fabro:hp")
             && run_sources.iter().any(|source| source == "fabro:vps"),
         "a run must name the factory it was observed at; got {run_sources:?}"
+    );
+
+    Ok(())
+}
+
+/// `livespec-console-beads-fabro-x6o6pl`: a REGISTRY-BACKED entry is polled at
+/// the server the host registry maps its NAME to.
+///
+/// Once the committed `dispatcher.factories` table is registry-backed (R318 /
+/// R320: `"registry": true`, no `server`, no `docker_host`), a console that
+/// keeps only entries carrying a committed `server` resolves ZERO factories and
+/// falls back to the fabro CLI's `http://127.0.0.1:32276` default -- structurally
+/// blind to every factory run, which is exactly the defect
+/// `livespec-console-beads-fabro-z4y7kp` above already fixed once.
+#[test]
+fn a_registry_backed_factory_is_polled_at_the_server_the_registry_maps_it_to() -> TestResult {
+    let repo_path = temp_checkout_with("registry-backed", &registry_backed_config_text())?;
+    let registry_path = write_factory_registry(&repo_path)?;
+    let resolution = resolution_with_registry(&repo_path, Some(&registry_path))?;
+    let answers = BTreeMap::from([(
+        LEGACY_SERVER.to_owned(),
+        SourceProbeOutcome::observed(
+            &fabro_run_stdout("01M2LEGACYRUNDDDDDDDDDDDDD", "wi-legacy"),
+            true,
+        ),
+    )]);
+    let probe = FactoryProbe::new(answers);
+
+    let (adapter_ids, store) = poll_once(&probe, &resolution)?;
+
+    assert!(
+        adapter_ids.contains(&format!("fabro:legacy:{REPO}")),
+        "a registry-backed factory still needs its own named source adapter; \
+         got {adapter_ids:?}"
+    );
+    assert_eq!(
+        probe.fabro_commands(),
+        vec![vec![
+            "ps".to_owned(),
+            "--json".to_owned(),
+            "--server".to_owned(),
+            LEGACY_SERVER.to_owned(),
+        ]],
+        "the committed table names no machine, so the ONLY address the console \
+         may poll `legacy` at is the one the host factory registry maps that \
+         name to"
+    );
+    assert_eq!(
+        observed_run_sources(&store)?,
+        ["fabro:legacy".to_owned()],
+        "the registry-resolved factory's run must land, attributed to the \
+         factory NAME the committed table declares"
     );
 
     Ok(())
