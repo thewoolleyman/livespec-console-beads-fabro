@@ -78,6 +78,7 @@ use console_tui::{
 mod backing_cli;
 /// The running binary's build identity, embedded at compile time.
 pub mod build_identity;
+mod factory_registry;
 mod factory_servers;
 mod source_poller;
 mod source_probe_diagnostics;
@@ -87,6 +88,7 @@ pub use backing_cli::{
     ConsoleInvokerResolution, NEEDS_ATTENTION_PROGRAM_ENV, PROGRAM_OVERRIDE_ENV_VARS,
     PluginResolution, ResolveInputs, python_normalized_invocation, resolve_console_invoker,
 };
+pub use factory_registry::{FactoryRegistry, HOST_FACTORY_REGISTRY_PATH};
 pub use factory_servers::{FactoryServer, factory_servers_at, parse_factory_servers};
 pub use source_poller::{SourcePollHost, SourcePollWake, run_paced_source_poll_loop};
 pub use source_probe_diagnostics::{
@@ -4410,13 +4412,13 @@ mod tests {
         CommandLaneFailure, CommandLaneReporter, CommandLaneSteps,
         CompatibilityNotWiredDispatchItemPort, ConsoleLane, ConsoleRuntimeError,
         ConsoleRuntimeResult, DoctorRunResult, ErroringPullSource, EventAppendStore,
-        FactoryCommandStore, FactoryServer, InitialSourceSeed, LANE_FAILURE_MARKER,
-        LANE_TIME_UNKNOWN, LaneStartupStage, MAX_TRANSIENT_STATUS_CHARS,
-        NEEDS_ATTENTION_PROGRAM_ENV, NeedsAttentionIngest, PROGRAM_OVERRIDE_ENV_VARS,
-        PendingCommandOutcome, PendingCommandRequester, PluginResolution, ResolveInputs,
-        STARTUP_STORE_ATTEMPTS, ScriptedSource, SessionTailCounts, SharedSqliteStore,
-        SourceAdapterRef, SourcePollRequester, SqliteSourceEventLog, StartupReadout,
-        StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
+        FactoryCommandStore, FactoryRegistry, FactoryServer, HOST_FACTORY_REGISTRY_PATH,
+        InitialSourceSeed, LANE_FAILURE_MARKER, LANE_TIME_UNKNOWN, LaneStartupStage,
+        MAX_TRANSIENT_STATUS_CHARS, NEEDS_ATTENTION_PROGRAM_ENV, NeedsAttentionIngest,
+        PROGRAM_OVERRIDE_ENV_VARS, PendingCommandOutcome, PendingCommandRequester,
+        PluginResolution, ResolveInputs, STARTUP_STORE_ATTEMPTS, ScriptedSource, SessionTailCounts,
+        SharedSqliteStore, SourceAdapterRef, SourcePollRequester, SqliteSourceEventLog,
+        StartupReadout, StoreBackedTuiRuntimeEffectSink, TuiSessionOutcome, TuiSessionRunner,
         append_demo_events_to_store, append_factory_drain_requested_events, append_lane_diagnostic,
         backfill_demo_report, backfill_source_adapters, backfill_source_report,
         bounded_operator_status, command_status_update_runtime_result,
@@ -11851,7 +11853,7 @@ mod tests {
 
     #[test]
     fn factory_servers_are_read_from_the_plugin_nested_dispatcher_block() {
-        let factories = parse_factory_servers(FACTORY_CONFIG);
+        let factories = parse_factory_servers(FACTORY_CONFIG, &FactoryRegistry::default());
 
         check((factories.len()) == (2), "assert_eq failed");
         check((factories[0].name()) == ("hp"), "assert_eq failed");
@@ -11872,6 +11874,7 @@ mod tests {
         // no implementation plugin named at all, still resolves.
         let factories = parse_factory_servers(
             r#"{"dispatcher": {"factories": {"local": {"server": "http://127.0.0.1:32276"}}}}"#,
+            &FactoryRegistry::default(),
         );
 
         check((factories.len()) == (1), "assert_eq failed");
@@ -11893,6 +11896,7 @@ mod tests {
                  "typed": {"server": 32276},
                  "hp": {"server": "https://hp.example:32276"}
                }}}"#,
+            &FactoryRegistry::default(),
         );
 
         check(
@@ -11906,22 +11910,32 @@ mod tests {
         // Each of these leaves the fabro source on the CLI's own default
         // endpoint rather than failing the console's startup: a checkout with no
         // orchestrator config must still poll every other source.
+        let registry = FactoryRegistry::default();
         check(
-            parse_factory_servers("{ not json at all").is_empty(),
+            parse_factory_servers("{ not json at all", &registry).is_empty(),
             "assert failed",
         );
-        check(parse_factory_servers("{}").is_empty(), "assert failed");
+        check(
+            parse_factory_servers("{}", &registry).is_empty(),
+            "assert failed",
+        );
         // A lone `/` that opens no comment is carried through verbatim rather
         // than swallowing the rest of the document, so the config it belongs to
         // fails to parse honestly instead of silently losing its factories.
-        check(parse_factory_servers("{}/").is_empty(), "assert failed");
         check(
-            parse_factory_servers(r#"{"dispatcher": {"factories": []}}"#).is_empty(),
+            parse_factory_servers("{}/", &registry).is_empty(),
             "assert failed",
         );
         check(
-            parse_factory_servers(r#"{"implementation": {"plugin": "other"}, "other": {}}"#)
-                .is_empty(),
+            parse_factory_servers(r#"{"dispatcher": {"factories": []}}"#, &registry).is_empty(),
+            "assert failed",
+        );
+        check(
+            parse_factory_servers(
+                r#"{"implementation": {"plugin": "other"}, "other": {}}"#,
+                &registry,
+            )
+            .is_empty(),
             "assert failed",
         );
     }
@@ -11935,11 +11949,183 @@ mod tests {
         fs::create_dir_all(&bare).ok_test();
         fs::write(configured.join(".livespec.jsonc"), FACTORY_CONFIG).ok_test();
 
+        let registry = FactoryRegistry::default();
         check(
-            (factory_servers_at(&configured).len()) == (2),
+            (factory_servers_at(&configured, &registry).len()) == (2),
             "assert_eq failed",
         );
-        check(factory_servers_at(&bare).is_empty(), "assert failed");
+        check(
+            factory_servers_at(&bare, &registry).is_empty(),
+            "assert failed",
+        );
+    }
+
+    /// A registry-backed committed entry (`"registry": true`, no `server`, no
+    /// `docker_host`) in the shape spec §"Factory routing" requires.
+    const REGISTRY_BACKED_CONFIG: &str = r#"{
+  "livespec-orchestrator-beads-fabro": {
+    "dispatcher": {
+      "factories": { "legacy": { "registry": true } },
+      "default_factory": "legacy"
+    }
+  }
+}
+"#;
+
+    /// Write one rendered factory registry under `temp` and read it back.
+    fn rendered_registry(temp: &Path, contents: &str) -> FactoryRegistry {
+        let path = temp.join("fabro-factories.json");
+        fs::write(&path, contents).ok_test();
+        FactoryRegistry::read_at(&path)
+    }
+
+    #[test]
+    fn the_host_registry_binds_only_names_it_renders_a_usable_server_for() {
+        // The dev-tooling contract's shape: a JSON object mapping each factory
+        // NAME to `{server, optional docker_host}`.
+        let temp = resolver_temp_root("factory-registry-read");
+        let registry = rendered_registry(
+            &temp,
+            r#"{
+              "legacy": {"server": "https://legacy.example:32276",
+                         "docker_host": "ssh://legacy.example"},
+              "padded": {"server": "  https://padded.example:32276  "},
+              "blank": {"server": "   "},
+              "absent": {"docker_host": "ssh://absent.example"},
+              "typed": {"server": 32276}
+            }"#,
+        );
+
+        check(
+            (registry.server_for("legacy")) == (Some("https://legacy.example:32276")),
+            "a rendered entry binds its name to its server",
+        );
+        check(
+            (registry.server_for("padded")) == (Some("https://padded.example:32276")),
+            "a rendered server is trimmed before it becomes a --server argument",
+        );
+        for unbound in ["blank", "absent", "typed", "never-rendered"] {
+            check(
+                (registry.server_for(unbound)).is_none(),
+                "a name the registry renders no usable server for binds nothing",
+            );
+        }
+    }
+
+    #[test]
+    fn an_absent_or_uninterpretable_host_registry_binds_nothing() {
+        // None of these fails the console's startup -- a host that renders no
+        // registry must still poll every other source. They bind no name, which
+        // is what makes a registry-backed entry unresolvable rather than
+        // silently addressed.
+        let temp = resolver_temp_root("factory-registry-unreadable");
+        check(
+            (FactoryRegistry::read_at(&temp.join("never-rendered.json")))
+                == (FactoryRegistry::default()),
+            "an absent registry binds nothing",
+        );
+        check(
+            (rendered_registry(&temp, "{ not json at all")) == (FactoryRegistry::default()),
+            "an uninterpretable registry binds nothing",
+        );
+        check(
+            (rendered_registry(&temp, r#"["legacy"]"#)) == (FactoryRegistry::default()),
+            "a registry that is not a JSON object of names binds nothing",
+        );
+    }
+
+    #[test]
+    fn a_registry_backed_entry_resolves_by_name_and_a_committed_server_still_wins_its_own_entry() {
+        let temp = resolver_temp_root("factory-registry-resolve");
+        let registry = rendered_registry(
+            &temp,
+            r#"{"legacy": {"server": "https://legacy.example:32276"}}"#,
+        );
+
+        check(
+            (parse_factory_servers(REGISTRY_BACKED_CONFIG, &registry))
+                == (vec![FactoryServer::new("legacy", "https://legacy.example:32276")]),
+            "a registry-backed entry is addressed at the server the host \
+             registry maps its NAME to",
+        );
+        // An entry that still carries its own server keeps the committed path,
+        // and `"registry": false` is not registry-backed.
+        check(
+            (parse_factory_servers(
+                r#"{"dispatcher": {"factories": {
+                     "hp": {"registry": false, "server": "https://hp.example:32276"},
+                     "vps": {"server": "https://vps.example:32276"}
+                   }}}"#,
+                &registry,
+            )) == (vec![
+                FactoryServer::new("hp", "https://hp.example:32276"),
+                FactoryServer::new("vps", "https://vps.example:32276"),
+            ]),
+            "an entry carrying its own committed server is still polled there",
+        );
+    }
+
+    #[test]
+    fn the_factory_registry_path_defaults_to_the_rendered_host_contract_path() {
+        // The default is the fleet contract's absolute path, which no test may
+        // write; a host that renders elsewhere names the file in the override,
+        // and a BLANK override is no override (an empty value would otherwise
+        // resolve to the current directory and read nothing, silently).
+        //
+        // The factory name is one no real rendered registry binds, so the
+        // default-path cases read whatever this host actually has at the
+        // contract path and still resolve nothing -- the test stays hermetic
+        // when it runs ON a dispatching host.
+        let temp = resolver_temp_root("factory-registry-path");
+        let repo = temp.join("repo");
+        fs::create_dir_all(&repo).ok_test();
+        fs::write(
+            repo.join(".livespec.jsonc"),
+            r#"{"dispatcher": {"factories": {
+                 "console-test-unrendered-factory": {"registry": true}
+               }}}"#,
+        )
+        .ok_test();
+        let registry_path = temp.join("rendered.json");
+        fs::write(
+            &registry_path,
+            r#"{"console-test-unrendered-factory":
+                 {"server": "https://legacy.example:32276"}}"#,
+        )
+        .ok_test();
+
+        let resolved_from = |env: BTreeMap<String, String>| {
+            BackingCliResolution::resolve(&resolver_inputs(env, repo.clone(), None))
+                .ok_test()
+                .programs()
+                .factory_servers()
+                .to_vec()
+        };
+
+        check(
+            (resolved_from(resolver_empty_env())) == (Vec::new()),
+            "with no override the console reads the host contract path, which \
+             binds nothing here",
+        );
+        check(
+            (resolved_from(BTreeMap::from([(
+                "LIVESPEC_CONSOLE_FABRO_FACTORY_REGISTRY".to_owned(),
+                "   ".to_owned(),
+            )])))
+                == (Vec::new()),
+            "a blank override is no override",
+        );
+        check(
+            (resolved_from(BTreeMap::from([(
+                "LIVESPEC_CONSOLE_FABRO_FACTORY_REGISTRY".to_owned(),
+                registry_path.display().to_string(),
+            )])))
+                == (vec![FactoryServer::new(
+                    "console-test-unrendered-factory",
+                    "https://legacy.example:32276",
+                )]),
+            "a non-blank override names the registry the console reads",
+        );
     }
 
     #[test]
@@ -11950,7 +12136,14 @@ mod tests {
         // alone cannot prove the real file parses.
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
-        let factories = factory_servers_at(&repo_root);
+        // The REAL host registry too, at the path the fleet contract renders it
+        // to. Absent on CI and in a sandbox, which is the honest ground truth
+        // there; present on a dispatching host, where it is what binds a
+        // registry-backed entry's server.
+        let factories = factory_servers_at(
+            &repo_root,
+            &FactoryRegistry::read_at(Path::new(HOST_FACTORY_REGISTRY_PATH)),
+        );
 
         check(
             !factories.is_empty(),

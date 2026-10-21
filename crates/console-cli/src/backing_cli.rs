@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::factory_registry::{FactoryRegistry, HOST_FACTORY_REGISTRY_PATH};
 use crate::factory_servers::{FactoryServer, factory_servers_at};
 
 const ORCHESTRATOR_PLUGIN_NAME: &str = "livespec-orchestrator-beads-fabro";
@@ -27,6 +28,11 @@ const DRIVE_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_DRIVE_PROGRAM";
 /// `crates/console-cli/tests/support/mod.rs`).
 pub const NEEDS_ATTENTION_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_NEEDS_ATTENTION_PROGRAM";
 const GH_PROGRAM_ENV: &str = "LIVESPEC_CONSOLE_GH_PROGRAM";
+/// Overrides where the host rendered its Fabro factory registry, for a host
+/// that renders it somewhere other than [`HOST_FACTORY_REGISTRY_PATH`]. Not a
+/// program override -- it names a FILE the console reads, so it is absent from
+/// [`PROGRAM_OVERRIDE_ENV_VARS`].
+const FACTORY_REGISTRY_ENV: &str = "LIVESPEC_CONSOLE_FABRO_FACTORY_REGISTRY";
 const INVOKER_ENV: &str = "LIVESPEC_INVOKER";
 
 /// Every `LIVESPEC_CONSOLE_*_PROGRAM` override env var this module honors.
@@ -228,7 +234,13 @@ impl BackingCliResolution {
         // The factory servers `fabro` is addressed at come from the SELECTED
         // repo's orchestrator config, so the console polls the same factories
         // the Dispatcher dispatches to rather than the CLI's localhost default.
-        programs.factory_servers = factory_servers_at(&selected_repo_path);
+        // A committed entry that names no machine (`"registry": true`) is
+        // resolved BY NAME through the host's rendered factory registry, the
+        // same file the Dispatcher resolves its own dispatches through.
+        programs.factory_servers = factory_servers_at(
+            &selected_repo_path,
+            &FactoryRegistry::read_at(&factory_registry_path(&inputs.env)),
+        );
         apply_program_overrides(&inputs.env, &mut programs);
         Ok(Self {
             selected_repo_path,
@@ -418,6 +430,19 @@ fn selected_repo_path(inputs: &ResolveInputs) -> PathBuf {
         .env
         .get(SELECTED_REPO_PATH_ENV)
         .map_or_else(|| inputs.current_dir.clone(), PathBuf::from)
+}
+
+/// Where to read the host's rendered Fabro factory registry.
+///
+/// The fleet contract renders it at [`HOST_FACTORY_REGISTRY_PATH`]; a host that
+/// renders it elsewhere names the path in [`FACTORY_REGISTRY_ENV`]. A blank
+/// override is no override -- an empty value would otherwise resolve to the
+/// current directory and read nothing, silently.
+fn factory_registry_path(env: &BTreeMap<String, String>) -> PathBuf {
+    env.get(FACTORY_REGISTRY_ENV)
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .map_or_else(|| PathBuf::from(HOST_FACTORY_REGISTRY_PATH), PathBuf::from)
 }
 
 fn resolve_plugin_root(
