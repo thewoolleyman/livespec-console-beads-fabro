@@ -35,7 +35,7 @@ has no limit flag, for instance; it prints the most recent 20 events.
 
 ## Environment variables
 
-All are optional. The console reads eleven of its own, plus `HOME`.
+All are optional. The console reads twelve of its own, plus `HOME`.
 
 ### Selecting what to operate on
 
@@ -102,7 +102,13 @@ on every poll. See
 | Variable | Purpose | Default |
 |---|---|---|
 | `LIVESPEC_CONSOLE_ORCHESTRATOR_PLUGIN_ROOT` | Explicit orchestrator plugin root, used to resolve the backing programs above. | discovered — a repo-local `scripts/bin`, else the installed-plugin record under `~/.claude` |
+| `LIVESPEC_CONSOLE_FABRO_FACTORY_REGISTRY` | The host's rendered Fabro factory registry — the file that binds a factory NAME to its server, for a `dispatcher.factories` entry that declares `"registry": true` and names no machine. A blank value is no override. | `/etc/livespec/fabro-factories.json` |
 | `HOME` | Roots plugin-cache, livespec-core, and Fabro discovery. | — |
+
+A committed `dispatcher.factories` entry that declares `"registry": true`
+carries no `server`: the console resolves it BY NAME through the registry
+above, the same file the Dispatcher resolves its own dispatches through. An
+entry that still carries a committed `server` is polled there as before.
 
 The credential wrapper supplies `BEADS_DOLT_PASSWORD` for the tenant. The
 console never reads that secret itself; it runs under the wrapper, which
