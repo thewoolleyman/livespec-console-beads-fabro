@@ -14,8 +14,17 @@
 //! dispatcher actually uses. It is READ-ONLY over the config file; the console
 //! never writes `.livespec.jsonc` (every setting change goes through the
 //! orchestrator's published `drive` action surface).
+//!
+//! A committed entry no longer has to CARRY its server. Spec `constraints.md`
+//! §"Factory routing" (v054, Scenario 34) requires every committed entry to be
+//! REGISTRY-BACKED -- `"registry": true`, no `server`, no `docker_host` -- so
+//! the committed table names no machine; such an entry resolves BY NAME through
+//! the host's rendered registry ([`crate::factory_registry`]). The
+//! committed-server path stays live for an entry that still carries one.
 
 use std::path::Path;
+
+use crate::factory_registry::FactoryRegistry;
 
 /// The orchestrator's per-repo configuration file, relative to the repo root.
 const CONFIG_FILE: &str = ".livespec.jsonc";
@@ -69,10 +78,13 @@ impl FactoryServer {
 /// non-governed repo). The Fabro source then falls back to the CLI's own default
 /// endpoint, which is correct for a host that genuinely runs a local fabro
 /// server.
+///
+/// `registry` is the host's rendered factory registry, which binds the servers
+/// of every registry-backed entry.
 #[must_use]
-pub fn factory_servers_at(repo_path: &Path) -> Vec<FactoryServer> {
+pub fn factory_servers_at(repo_path: &Path, registry: &FactoryRegistry) -> Vec<FactoryServer> {
     std::fs::read_to_string(repo_path.join(CONFIG_FILE))
-        .map(|config| parse_factory_servers(&config))
+        .map(|config| parse_factory_servers(&config, registry))
         .unwrap_or_default()
 }
 
@@ -82,10 +94,14 @@ pub fn factory_servers_at(repo_path: &Path) -> Vec<FactoryServer> {
 /// (`<implementation.plugin>.dispatcher.factories`, where a governed repo
 /// actually declares them) and then at the top level, so a config written either
 /// way resolves. Entries are returned in the config's key order (`serde_json`'s
-/// object map is ordered by key), and an entry with no non-empty `server` string
-/// is dropped -- a factory the console cannot address is not one it can poll.
+/// object map is ordered by key).
+///
+/// An entry declaring `"registry": true` is REGISTRY-BACKED and resolves BY
+/// NAME through `registry`. Any other entry resolves from its own committed
+/// `server`, and one carrying no non-empty `server` string is dropped -- a
+/// factory the console cannot address is not one it can poll.
 #[must_use]
-pub fn parse_factory_servers(config: &str) -> Vec<FactoryServer> {
+pub fn parse_factory_servers(config: &str, registry: &FactoryRegistry) -> Vec<FactoryServer> {
     let Ok(document) = serde_json::from_str::<serde_json::Value>(&strip_jsonc_comments(config))
     else {
         return Vec::new();
@@ -104,14 +120,41 @@ pub fn parse_factory_servers(config: &str) -> Vec<FactoryServer> {
     };
     factories
         .iter()
-        .filter_map(|(name, declaration)| {
-            declaration
-                .get("server")
-                .and_then(serde_json::Value::as_str)
-                .filter(|server| !server.trim().is_empty())
-                .map(|server| FactoryServer::new(name, server.trim()))
-        })
+        .filter_map(|(name, declaration)| resolve_factory(name, declaration, registry))
         .collect()
+}
+
+/// Resolve one `dispatcher.factories` entry to the server the Fabro source
+/// polls it at.
+fn resolve_factory(
+    name: &str,
+    declaration: &serde_json::Value,
+    registry: &FactoryRegistry,
+) -> Option<FactoryServer> {
+    if is_registry_backed(declaration) {
+        return registry
+            .server_for(name)
+            .map(|server| FactoryServer::new(name, server));
+    }
+    committed_server(declaration).map(|server| FactoryServer::new(name, server))
+}
+
+/// Whether the entry declares itself registry-backed (`"registry": true`), the
+/// shape spec §"Factory routing" requires of every committed entry.
+fn is_registry_backed(declaration: &serde_json::Value) -> bool {
+    declaration
+        .get("registry")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The non-empty `server` an entry commits, if it commits one.
+fn committed_server(declaration: &serde_json::Value) -> Option<&str> {
+    declaration
+        .get("server")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|server| !server.is_empty())
 }
 
 fn factories_in(
