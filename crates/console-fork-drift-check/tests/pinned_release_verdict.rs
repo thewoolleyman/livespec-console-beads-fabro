@@ -66,6 +66,55 @@ fn the_verdict_is_taken_against_the_pinned_release_not_the_installed_bundle() ->
     Ok(())
 }
 
+#[test]
+fn a_newer_installed_release_draws_a_currency_warning_naming_both_releases() -> Result<(), String> {
+    let root = repository("currency", PINNED_BUNDLE_BODY)?;
+    let home = installed_plugin("currency", &root, NEWER_RELEASE, NEWER_BUNDLE_BODY)?;
+
+    let output = gate(&root, &home)?;
+
+    let rendered = rendered(&output);
+    assert!(
+        output.status.success(),
+        "a newer install is a currency signal, so the gate still exits zero: {rendered}"
+    );
+    let warning = currency_warning(&rendered).unwrap_or_default();
+    assert!(
+        warning.contains(PINNED_RELEASE),
+        "the currency warning names the PINNED release: {rendered}"
+    );
+    assert!(
+        warning.contains(NEWER_RELEASE),
+        "the currency warning names the INSTALLED release: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_install_at_the_pinned_release_draws_no_currency_warning() -> Result<(), String> {
+    let root = repository("current", PINNED_BUNDLE_BODY)?;
+    let home = installed_plugin("current", &root, PINNED_RELEASE, PINNED_BUNDLE_BODY)?;
+
+    let output = gate(&root, &home)?;
+
+    let rendered = rendered(&output);
+    assert!(output.status.success(), "{rendered}");
+    assert!(
+        currency_warning(&rendered).is_none(),
+        "a host already at the pinned release has no currency to warn about: {rendered}"
+    );
+    Ok(())
+}
+
+/// The gate's currency-warning line, if it printed one. A currency signal that
+/// does not name BOTH releases on its own line leaves the reader to guess which
+/// of the two the verdict came from, which is the whole question.
+fn currency_warning(rendered: &str) -> Option<&str> {
+    rendered
+        .lines()
+        .find(|line| line.contains("CURRENCY WARNING"))
+}
+
 /// A throwaway repository root: the pin fixture naming [`PINNED_RELEASE`], and a
 /// committed fork whose one file carries `fork_body`.
 fn repository(label: &str, fork_body: &str) -> Result<PathBuf, String> {

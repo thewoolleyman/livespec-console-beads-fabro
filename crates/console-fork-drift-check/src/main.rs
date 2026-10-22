@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use console_fork_drift_check::{
-    FORK_DIR, PIN_MANIFEST, check_local, digest, digest_for_pin, parse_pinned_release, parse_pins,
-    resolve_upstream_dir,
+    FORK_DIR, PIN_MANIFEST, check_local, currency, digest, digest_for_pin, parse_pinned_release,
+    parse_pins, resolve_upstream_dir,
 };
 
 fn main() -> ExitCode {
@@ -89,17 +89,14 @@ fn run(repo_root: &Path, home: &Path) -> Result<(), String> {
          {pinned_release}, as pinned in {PIN_MANIFEST}",
         pins.len()
     );
-    match resolve_upstream_dir(home, &absolute_root(repo_root)) {
-        Ok((_bundle, installed)) => {
-            println!("console-fork-drift-check: installed orchestrator release {installed}");
-        }
-        Err(reason) => {
-            println!(
-                "console-fork-drift-check: installed orchestrator release unresolved — {reason}. \
-                 The verdict is unaffected: it is taken against the pinned release."
-            );
-        }
-    }
+    println!(
+        "{}",
+        currency(
+            &pinned_release,
+            &resolve_upstream_dir(home, &absolute_root(repo_root))
+        )
+        .render()
+    );
 
     if findings.is_empty() {
         println!("console-fork-drift-check: fork in lockstep with its pins");
