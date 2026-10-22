@@ -264,6 +264,7 @@ check:
         check-deps
         check-arch
         check-behavior-coverage
+        check-heading-coverage-debt-register
         check-spec-fenced-block-staleness
         check-completeness
         check-spec-governance-default-block
@@ -368,6 +369,26 @@ check-arch:
 # report-only runs.
 check-behavior-coverage:
     cargo run --quiet --package console-spec-check
+
+# Shrink-only heading-coverage debt ratchet (charter D3 of livespec-dev-tooling
+# plan `fleet-heading-coverage-convergence`, epic livespec-dev-tooling-0bse),
+# over the SAME tests/heading-coverage.json registry check-behavior-coverage
+# reads. tests/heading-coverage-debt.json freezes today's `test: "TODO"` rows as
+# a baseline keyed by (spec_root, spec_file, heading); the only movement the
+# gate permits is downward, so the way to add a `TODO` is to resolve one first.
+# This repo's registry rows are scenario-shaped (console-spec-check's
+# parse_entry requires `scenario`/`scenario_file`), and the shared check derives
+# the ratified triple from them rather than requiring the registry to be
+# rekeyed -- that derivation is livespec-dev-tooling-7oec4d, carried by the
+# v1.125.0 pin this repo adopted it on. Before it landed, the ratchet left every
+# scenario-shaped row unkeyed and the register could not be generated here.
+#
+# NEVER hand-edit the register: regenerate it with
+# `uv run python -m livespec_dev_tooling.heading_coverage_debt`, which restates
+# what the live registry already says and preserves each row's recorded
+# first_seen date. A hand-authored baseline is a list of exemptions.
+check-heading-coverage-debt-register:
+    uv run python -m livespec_dev_tooling.checks.heading_coverage_debt_register
 
 # Fenced-block staleness gate (livespec-console-beads-fabro-4jb3kl.6). The
 # clause extractor SKIPS fenced code blocks, so a mermaid diagram or a Gherkin

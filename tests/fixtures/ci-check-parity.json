@@ -27,6 +27,11 @@
       "reason": "Merge-gate fuzz run (livespec-console-beads-fabro-txtzn5.9). Deliberately absent from the `just check` aggregate: SPECIFICATION/non-functional-requirements.md ratifies that `just check` MUST NOT include fuzz runs. At >=60s per target across three targets it is also a minutes-long floor by construction, which is not what a local pre-commit aggregate is for."
     },
     {
+      "name": "check-heading-coverage-debt-register",
+      "present_in_ci": false,
+      "reason": "Shrink-only heading-coverage debt ratchet, armed in the janitor/local aggregate by livespec-console-beads-fabro-2zurwc. It belongs in the CI check matrix too — the gate is tree-pure and needs no secret — but this factory slice may not edit .github/workflows/ to add the matching matrix target, so the one-line addition was reported for maintainer-side landing. Delete this entry when that CI target lands."
+    },
+    {
       "name": "check-mutants",
       "present_in_just_check": false,
       "reason": "Merge-gate mutation run (livespec-console-beads-fabro-txtzn5.10). Deliberately absent from the `just check` aggregate: SPECIFICATION/non-functional-requirements.md ratifies that `just check` MUST NOT include mutation runs. It also cannot run there \u2014 it needs a base ref to diff against, which a local aggregate invocation has no way to supply."

@@ -1,0 +1,107 @@
+[
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "non-functional-requirements.md",
+    "heading": "## Contributor Scenario A -- Functional / non-functional placement boundary",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-07-08"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "non-functional-requirements.md",
+    "heading": "## Contributor Scenario B -- Red-Green-Replay gates Rust product commits",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-07-08"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "non-functional-requirements.md",
+    "heading": "## Contributor Scenario E -- Beads/Fabro family secret convention",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-07-08"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "non-functional-requirements.md",
+    "heading": "## Contributor Scenario F -- Implementation language and the unsafe-code ban",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-07-08"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "non-functional-requirements.md",
+    "heading": "## Contributor Scenario G -- Railway-oriented error handling",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-07-08"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "non-functional-requirements.md",
+    "heading": "## Contributor Scenario H -- Domain-driven boundaries are preserved",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-07-08"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "non-functional-requirements.md",
+    "heading": "## Contributor Scenario I -- Architecture tests enforce the layering invariants",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-07-08"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "non-functional-requirements.md",
+    "heading": "## Contributor Scenario J -- Cross-repo action-surface parity",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-08-03"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "scenarios.md",
+    "heading": "## Scenario 10 -- A per-item override beats the global default, except `wip_cap`",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-07-15"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "scenarios.md",
+    "heading": "## Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-07-04"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "scenarios.md",
+    "heading": "## Scenario 16 -- Factory drain passes the Dispatcher no policy-arming argument",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-07-15"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "scenarios.md",
+    "heading": "## Scenario 27 -- Every operator action is menu-reachable; hotkeys are only additional",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-08-03"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "scenarios.md",
+    "heading": "## Scenario 29 -- The console is the control-plane surface, not a deciding agent",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-09-01"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "scenarios.md",
+    "heading": "## Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes",
+    "work_item": "livespec-console-beads-fabro-adf4nu",
+    "first_seen": "2026-09-29"
+  },
+  {
+    "spec_root": "SPECIFICATION",
+    "spec_file": "scenarios.md",
+    "heading": "## Scenario 34 -- A dispatch resolves its factory through the host's factory registry",
+    "work_item": "livespec-console-beads-fabro-y9hc",
+    "first_seen": "2026-10-20"
+  }
+]
