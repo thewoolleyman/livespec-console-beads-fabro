@@ -20,7 +20,9 @@ durable second route when the preamble carries none. Read it with `cat`.
 
 The brief names the stage, the pre-refresh head, the default-branch commit the
 refresh targeted, and either each conflicted path together with the run commit
-that was being applied, or each failed gate target. Your job is to INTEGRATE
+that was being applied, or each failed gate target. When any named file is a
+declared GENERATED record file, the brief also carries one
+`regenerate: <path> via <generator argv>` line for it. Your job is to INTEGRATE
 the default branch into this run's work inside this turn and resolve the
 conflict or the gate failure:
 
@@ -28,6 +30,23 @@ conflict or the gate failure:
    run's work onto it yourself, resolving each conflicted path on its merits.
    Do NOT resolve by taking one side wholesale — a conflict means both sides
    changed something, and discarding either loses work somebody shipped.
+
+   **A `regenerate:` line in the brief is an instruction, not a hint.** The
+   brief carries one line `regenerate: <path> via <generator argv>` for every
+   named file whose content is GENERATED from the repository's tree. Resolve
+   every OTHER conflicted path first, and then resolve each named file by
+   running exactly that argv from the repository root and committing whatever it
+   writes. NEVER edit such a file's text, and never merge its conflicted
+   hunks — not even "carefully", and not even when the merge looks obvious. Its
+   correct content is its generator's output over the integrated tree, so a hand
+   merge keeps whichever rows you chose and silently drops the rest; the measured
+   instance lost two rows the default branch had added while this run was in
+   flight, and the register's own check then failed on the repaired head and was
+   reported as an inherited default-branch failure. A gate target of the form
+   `generated-record-file:<path>` is the same finding reached through the gate
+   rather than through a conflict, and it has the same one remedy: run the
+   generator the brief names for that path. If the generator exits non-zero, that
+   is the finding to fix — never a reason to write the file by hand.
 2. Run the repository's check suite (`{{ inputs.sandbox_check_suite }}`)
    against the integrated tree and fix what the integration broke.
    Run it ONCE per tree, under the once-per-tree rule below, which counts a
