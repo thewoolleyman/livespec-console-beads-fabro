@@ -80,4 +80,4 @@ registry (livespec-dev-tooling `non-functional-requirements.md`
 §"Fabro factory registry"), which each dispatching host renders as
 `/etc/livespec/fabro-factories.json`; a dispatch resolves a
 registry-backed entry from that file by name.
-`dispatcher.default_factory` MUST name `legacy`.
+`dispatcher.default_factory` MUST name `petri`.
