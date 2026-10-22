@@ -1600,7 +1600,7 @@
     "scenario": "Scenario 34 -- A dispatch resolves its factory through the host's factory registry",
     "scenario_file": "scenarios.md",
     "test": "TODO",
-    "reason": "Test tier: a top-of-pyramid acceptance test should prove the v054 Factory routing clauses: the committed `.livespec.jsonc` `dispatcher.factories` table declares only registry-backed entries (`\"registry\": true`, no `server`, no `docker_host`) and `dispatcher.default_factory` names `legacy`, and a dispatch with no explicit factory creates its Fabro run on the server the host-rendered `/etc/livespec/fabro-factories.json` maps `legacy` to. Registered pending at ratification time because the committed table still names machines until the registry-switch work-item filed after this revision lands, and the dispatch half is a host-captured proof no factory sandbox can take; console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "reason": "Test tier: a top-of-pyramid acceptance test should prove the v054 Factory routing clauses (default renamed to `petri` in v056): the committed `.livespec.jsonc` `dispatcher.factories` table declares only registry-backed entries (`\"registry\": true`, no `server`, no `docker_host`) and `dispatcher.default_factory` names `petri`, and a dispatch with no explicit factory creates its Fabro run on the server the host-rendered `/etc/livespec/fabro-factories.json` maps `petri` to. Registered pending at ratification time because the committed table still names machines until the registry-switch work-item filed after this revision lands, and the dispatch half is a host-captured proof no factory sandbox can take; console-spec-check requires every live scenario to carry a non-empty test registration.",
     "work_item": "livespec-console-beads-fabro-y9hc",
     "clauses": [
       {
@@ -1608,7 +1608,7 @@
         "scenario": "Scenario 34 -- A dispatch resolves its factory through the host's factory registry"
       },
       {
-        "gap_id": "gap-ltwi7hm7",
+        "gap_id": "gap-mzhfu4mj",
         "scenario": "Scenario 34 -- A dispatch resolves its factory through the host's factory registry"
       }
     ]

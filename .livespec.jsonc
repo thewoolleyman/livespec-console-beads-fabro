@@ -243,14 +243,24 @@
       // /etc/livespec/fabro-factories.json; a dispatch resolves an entry from
       // that file BY NAME. Ratified here as SPECIFICATION/constraints.md
       // "Factory routing" (v054), carried by SPECIFICATION/scenarios.md
-      // "Scenario 34". Routing is UNCHANGED by the switch: the control node's
-      // registry maps `legacy` to the same hp :32276 instance the former `hp`
-      // entry named, and the former `vps` entry was already retired. A
-      // recorded item pin naming `hp`, `vps` or `default` falls back to
-      // `default_factory` under the ratified recorded-pin fallback.
+      // "Scenario 34". The control node's registry maps `legacy` to the same hp
+      // :32276 instance the former `hp` entry named, and the former `vps` entry
+      // was already retired.
       //
-      // `petri` is deliberately absent: onboarding it needs this repository's
-      // own bin and secret-channel settings and is a separate decision.
+      // DEFAULT IS `petri` (spec v056, coordinator ruling R668, maintainer-
+      // directed; the orchestrator's own cutover is bd-ib-iud52v, its PR
+      // #3461). The registry maps `petri` to the Petri-era Fabro server on
+      // gmktec. Its entry carries the three non-address keys a Petri-era
+      // server needs, with the orchestrator's meanings (its .livespec.jsonc
+      // documents each): `bin` is the Petri-era engine CLIENT on the
+      // operator host, which wins over the global fabro_bin resolution;
+      // `secret_channel` `native_secrets` is required by Petri-era engines;
+      // `environment` names the server-managed environment the dispatch
+      // selects, which on a Petri-era server overrides the workflow's
+      // `[run.environment]` id. `legacy` stays declared, so an item that
+      // already recorded a `legacy` pin finishes on hp, and rollback is
+      // reverting the default. A recorded pin naming `hp`, `vps` or
+      // `default` falls back to `default_factory`, and so now lands on petri.
       //
       // The console READS this table (crates/console-cli/src/factory_servers.rs)
       // and resolves a `"registry": true` entry by name through
@@ -259,9 +269,18 @@
       // crates/console-cli/tests/committed_factory_table_names_no_machine.rs,
       // which asserts this table's shape against the committed bytes.
       "factories": {
-        "legacy": { "registry": true }
+        "legacy": { "registry": true },
+        "petri": {
+          "registry": true,
+          "bin": "/home/ubuntu/.local/state/fabro-currency/carrier-petri-v0.382-adeefec4c/fabro",
+          "secret_channel": "native_secrets",
+          // livespec-ci-rust, not livespec-ci: this repository builds Rust
+          // (R622), and on a Petri-era engine the catalog environment named
+          // here decides the sandbox image (python-rust-agent-v1.126.0).
+          "environment": "livespec-ci-rust"
+        }
       },
-      "default_factory": "legacy",
+      "default_factory": "petri",
 
       // Per-node ACP turn ceilings (orchestrator contracts.md "ACP node
       // timeouts"). The Dispatcher RENDERS these into the dispatch payload's
