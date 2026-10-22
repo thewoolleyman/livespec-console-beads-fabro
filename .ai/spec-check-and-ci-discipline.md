@@ -637,8 +637,12 @@ failed push were indistinguishable.
   `just check-baseline` fails there with `worktree_pack_absent` and blocks
   the push. Run **`just install-worktree-pack`** in every new worktree.
   Prefer it to `just bootstrap`: bootstrap reconciles the claude-plugins row
-  and **advances the local plugin install**, which is what turns
-  `check-fork-drift` red on clean master (see that gate's own note).
+  and **advances the local plugin install**, which used to turn
+  `check-fork-drift` red on clean master — until that gate stopped taking its
+  verdict from the installed build (work-item
+  `livespec-console-beads-fabro-lavbfp`). Advancing the install is still a
+  bigger act than installing a pack, so the narrow recipe is still the one to
+  reach for.
 - **A `fix(`/`feat(` subject forces a test-only commit into Red mode, and a
   passing test then bounces.** The `red-green-replay` commit-msg hook
   classifies STAGED CONTENT, not just product Rust. When a changeset stages

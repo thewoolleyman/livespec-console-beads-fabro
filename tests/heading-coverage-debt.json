@@ -57,13 +57,6 @@
   },
   {
     "spec_root": "SPECIFICATION",
-    "spec_file": "non-functional-requirements.md",
-    "heading": "## Contributor Scenario K -- The fork-drift gate judges the workflow fork against its pinned orchestrator release",
-    "work_item": "livespec-console-beads-fabro-lavbfp",
-    "first_seen": "2026-10-22"
-  },
-  {
-    "spec_root": "SPECIFICATION",
     "spec_file": "scenarios.md",
     "heading": "## Scenario 10 -- A per-item override beats the global default, except `wip_cap`",
     "work_item": "livespec-console-beads-fabro-y9hc",

@@ -177,26 +177,27 @@ CLOSURE, not the merge. The state that leaves behind is an unclosed item behind
 an already-merged PR, which is quieter and more misleading than a stuck PR would
 be. Close it by hand after verifying acceptance against the merged code.
 
-### The POST-MERGE JANITOR fails two ways AFTER the merge — settle by hand, do NOT reconcile
+### The POST-MERGE JANITOR fails AFTER the merge — settle by hand, do NOT reconcile
 
 The hand-close above is not a rare edge. The post-merge JANITOR runs on the
 LOCAL host (a fresh detached checkout, then `mise exec -- just check`), so it
 fails for host reasons unrelated to the merged code, AFTER the merge already
-landed at the journal's `pr-merge-sha-recording` stage. Measured 2026-09-08,
-both on `-4jb3kl`:
+landed at the journal's `pr-merge-sha-recording` stage. Measured 2026-09-08 on
+`-4jb3kl`:
 
 - **Host OOM.** The janitor's `just check` is cargo builds — the memory hog on
   this host. A load spike OOM-kills the local `drive.py` mid-janitor (the
   journal reaches `janitor-checkout-*`, then the task dies with "running low on
   memory"). The merge already landed; the kill costs only the local
   close-on-merge step.
-- **A host-local `check-fork-drift` resolution artifact.** The janitor's fresh
-  checkout resolves the installed orchestrator build from
-  `installed_plugins.json` by projectPath; when that row is stale, missing, or
-  points at a build whose `.fabro` prose differs from the committed pin (e.g.
-  mid fork-rollback the row was pruned or left pointing at the rolled-out build),
-  `check-fork-drift` reddens even though master CI — which resolves correctly —
-  is green. The merge is sound; only the local janitor is not.
+
+A SECOND host-local cause used to belong here and no longer exists: the janitor
+resolved the installed orchestrator build from `installed_plugins.json` by
+projectPath, so a stale, missing, or rolled-forward row reddened
+`check-fork-drift` locally while master CI — which resolved correctly — was
+green. That gate now takes its verdict from the committed pin fixture alone
+(work-item `livespec-console-beads-fabro-lavbfp`), so no `installed_plugins.json`
+state can redden a janitor. Do not go looking for it.
 
 DISCRIMINATOR (keep it distinct from the four traps above): the journal
 `pr-merge-sha-recording` row carries a non-null merge_sha AND `gh pr view <n>`

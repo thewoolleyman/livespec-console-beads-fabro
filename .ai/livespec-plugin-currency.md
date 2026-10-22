@@ -225,12 +225,21 @@ What to do when you see exit code 3 with this message:
    `justfile`'s `check-doctor-static` recipe carries the same warning
    about the same file for the livespec core plugin; it is the same
    trap.
-3. **Check `just check-fork-drift` after the pin moves**, before
-   assuming the bump was free. That check compares this repo's 8 pinned
-   fork files against the INSTALLED plugin build, so a pin move can
-   redden `just check` for every session in the repo. On the
-   `15a4ae9aff88` -> `5dcbc6829ff9` move it stayed green, but that is a
-   fact to verify, not to assume.
+3. **A pin move no longer reddens `just check-fork-drift`** — and it did,
+   for over a year, which is why that step used to live here. The gate
+   compared this repo's pinned fork files against the INSTALLED plugin
+   build, so every orchestrator release that touched the workflow bundle
+   turned `master` red on every host that ran `ensure-plugins`, with no
+   console commit at all: three hand recoveries in three days (R316 /
+   PR 1256, R498 / PR 1260, R620 / PR 1268) before work-item
+   `livespec-console-beads-fabro-lavbfp` fixed the root cause. The verdict
+   is now taken against the release the committed pin fixture NAMES, so it
+   is the same on every host; a newer installed release prints a currency
+   warning naming both releases and exits zero. A pin move still deserves
+   the design review when you choose to ADVANCE the pin — that is a
+   committed re-sync change (work-item
+   `livespec-console-beads-fabro-d2kujl`) — but it no longer blocks anyone
+   else's push while you get to it.
 
 ### Better: resolve the pin AT DISPATCH TIME and the class disappears
 
@@ -315,5 +324,6 @@ probe what the gate probes:
 
 and compare that SHA to the build you are about to execute. Cheap, and it
 distinguishes "my pin is stale" from "my session is stale" without burning a
-run. Re-check `just check-fork-drift` after any pin move — it stayed green
-across all five moves today, but that is a fact to verify rather than assume.
+run. `just check-fork-drift` is no longer part of this: since
+`livespec-console-beads-fabro-lavbfp` its verdict comes from the committed pin
+fixture, so a pin move cannot redden it on any host (see step 3 above).
