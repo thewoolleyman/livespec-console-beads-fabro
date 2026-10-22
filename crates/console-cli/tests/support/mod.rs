@@ -1053,6 +1053,66 @@ fn program_override_export_lines(stub: &str, needs_attention_stub: &str) -> Stri
         })
 }
 
+/// Overrides where the console looks for the host-rendered Fabro factory
+/// registry, as `crates/console-cli/src/backing_cli.rs` names it.
+///
+/// Hand-copied, like `crates/console-cli/tests/fabro_factory_registry.rs`'s own
+/// copy, because the production constant is private to that module — it is not
+/// a program override, so it is deliberately absent from
+/// `PROGRAM_OVERRIDE_ENV_VARS`, which is the one list this harness derives.
+/// Drift fails CLOSED rather than silently: were the name to change, the
+/// override would stop being honored, a registry-backed factory would resolve
+/// nowhere, and [`TmuxConsole::assert_source_health`] would name it unavailable.
+const FACTORY_REGISTRY_PATH_ENV: &str = "LIVESPEC_CONSOLE_FABRO_FACTORY_REGISTRY";
+
+/// Render a hermetic Fabro factory registry for `repo` and return its path,
+/// binding every factory NAME the repo's committed `.livespec.jsonc` declares
+/// to an inert stub server.
+///
+/// Every committed `dispatcher.factories` entry is REGISTRY-BACKED
+/// (`"registry": true`, no `server`, no `docker_host`) under coordinator
+/// rulings R318/R320 — `SPECIFICATION/constraints.md` §"Factory routing",
+/// Scenario 34 — so which server answers to a factory name is bound ONLY in
+/// the registry each dispatching host renders at
+/// `FactoryRegistry::HOST_FACTORY_REGISTRY_PATH`. That makes the registry
+/// ambient host state of exactly the kind this harness exists to pin: a scene
+/// that left it unset would resolve every committed factory nowhere and be
+/// reported cockpit-blind, and would do so NON-DETERMINISTICALLY — a
+/// dispatching host renders that file and a CI runner does not, so the same
+/// scene would pass on one and fail on the other. Rendering one here is the
+/// same hermeticity move as pinning `PATH` and stubbing all seven backing CLIs.
+///
+/// The names are read from the repo's own committed config through the
+/// PRODUCTION parser rather than hard-coded, so renaming, adding, or removing a
+/// committed factory needs no edit here. A fixture rooted at a directory with
+/// no `.livespec.jsonc` (the single-repo B1 scenes) declares no factories and
+/// gets an empty registry, leaving the fabro source on its unqualified default
+/// exactly as before.
+fn write_factory_registry_stub(scratch: &Path, repo: &RepoFixture) -> HarnessResult<PathBuf> {
+    let config_path = repo.repo_path().join(".livespec.jsonc");
+    let committed = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let declared = livespec_console_beads_fabro::parse_factory_servers(
+        &committed,
+        &livespec_console_beads_fabro::FactoryRegistry::default(),
+    );
+    let rendered = serde_json::Value::Object(
+        declared
+            .iter()
+            .map(|factory| {
+                let name = factory.name();
+                (
+                    name.to_owned(),
+                    serde_json::json!({ "server": format!("https://{name}.e2e-stub.invalid:32276") }),
+                )
+            })
+            .collect(),
+    );
+    let path = scratch.join("fabro-factories.json");
+    std::fs::write(&path, rendered.to_string())
+        .map_err(|error| format!("write factory registry {} failed: {error}", path.display()))?;
+    Ok(path)
+}
+
 /// Write the pane launcher script and return its path. It sets a HERMETIC PATH
 /// (the scratch dir front, then only the coreutils dirs — NOT the ambient PATH),
 /// so the `gh` stub shadows the github backing CLI AND no source can silently
@@ -1083,6 +1143,7 @@ fn write_launcher(
     let stub = shell_quote(&stub.display().to_string());
     let needs_attention_stub = shell_quote(&needs_attention_stub.display().to_string());
     let program_overrides = program_override_export_lines(&stub, &needs_attention_stub);
+    let factory_registry = write_factory_registry_stub(scratch, repo)?;
     let body = format!(
         "#!/usr/bin/env bash\n\
          cd {repo_path} || exit 97\n\
@@ -1091,11 +1152,14 @@ fn write_launcher(
          export {busy_timeout_env}={busy_timeout_ms}\n\
          export LIVESPEC_CONSOLE_REPO={tenant}\n\
          export LIVESPEC_CONSOLE_REPO_PATH={repo_path}\n\
+         export {factory_registry_env}={factory_registry}\n\
          {program_overrides}\
          {binary} serve\n\
          printf 'TUI_EXIT=%s\\n' \"$?\"\n\
          sleep 300\n",
         repo_path = shell_quote(&repo.repo_path.display().to_string()),
+        factory_registry_env = FACTORY_REGISTRY_PATH_ENV,
+        factory_registry = shell_quote(&factory_registry.display().to_string()),
         scratch_dir = shell_quote(&scratch.display().to_string()),
         store = shell_quote(&store_path.display().to_string()),
         busy_timeout_env = console_eventstore::BUSY_TIMEOUT_ENV,
@@ -1301,6 +1365,7 @@ fn write_launcher_with_env(
         // Writing to a String is infallible; the Result is discarded.
         let _ = writeln!(extra, "export {key}={}", shell_quote(value));
     }
+    let factory_registry = write_factory_registry_stub(scratch, repo)?;
     let body = format!(
         "#!/usr/bin/env bash\n\
          cd {repo_path} || exit 97\n\
@@ -1309,12 +1374,15 @@ fn write_launcher_with_env(
          export {busy_timeout_env}={busy_timeout_ms}\n\
          export LIVESPEC_CONSOLE_REPO={tenant}\n\
          export LIVESPEC_CONSOLE_REPO_PATH={repo_path}\n\
+         export {factory_registry_env}={factory_registry}\n\
          {program_overrides}\
          {extra}\
          {binary} serve\n\
          printf 'TUI_EXIT=%s\\n' \"$?\"\n\
          sleep 300\n",
         repo_path = shell_quote(&repo.repo_path().display().to_string()),
+        factory_registry_env = FACTORY_REGISTRY_PATH_ENV,
+        factory_registry = shell_quote(&factory_registry.display().to_string()),
         scratch_dir = shell_quote(&scratch.display().to_string()),
         store = shell_quote(&store_path.display().to_string()),
         busy_timeout_env = console_eventstore::BUSY_TIMEOUT_ENV,
