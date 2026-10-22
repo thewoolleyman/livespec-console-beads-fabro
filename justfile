@@ -564,10 +564,19 @@ check-shell-quality:
 # Fork-drift gate over the committed `.fabro/workflows/implement-work-item/`
 # fork. Upstream once fixed the pr-stage publish leg (bd-ib-qq7f, PR #905) and
 # our fork silently kept the broken one for three weeks, because NOTHING
-# asserted the leg was present. This is that assertion. It pins UPSTREAM digests
-# per file rather than asserting byte-equality against an allowlist — six of the
-# seven files diverge deliberately, so an allowlist wide enough to tolerate that
-# would pass on anything. Re-pin with `just refresh-fork-upstream-pins`.
+# asserted the leg was present. This is that assertion.
+#
+# The verdict is a function of COMMITTED state: the fork's bytes against the
+# per-file digests `tests/fixtures/fabro-fork-upstream-pins.json` records for the
+# orchestrator release its `upstream_plugin_version` names. It needs no plugin
+# and no network, so one console commit gets ONE verdict on every host, CI
+# included. The host's installed release is reported beside it as CURRENCY
+# ONLY — a newer install names both releases and exits zero, never red, because
+# a Factory dispatch runs this repository's committed fork and never the
+# installed bundle (work-item livespec-console-beads-fabro-lavbfp, spec v055
+# Contributor Scenario K; before it, every orchestrator release that touched the
+# bundle reddened `master` on every host with no console commit at all).
+# Advance the pin with a reviewed re-sync: `just refresh-fork-upstream-pins`.
 check-fork-drift:
     cargo run --quiet --package console-fork-drift-check
 

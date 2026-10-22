@@ -654,8 +654,11 @@ check-baseline` is the fail-closed verifier wired into `just check`.
    `check-baseline` at once). And in a fresh worktree, `just check-baseline`
    BEFORE committing confirms the pack in seconds. Prefer either over `just
    bootstrap`, which reconciles the claude-plugins row and **advances the local
-   plugin install** —
-   the thing that turns `check-fork-drift` red on clean `master`. The rest of the
+   plugin install** — which used to turn `check-fork-drift` red on clean
+   `master`, until that gate stopped taking its verdict from the installed build
+   (work-item `livespec-console-beads-fabro-lavbfp`); advancing the install is
+   still a bigger act than installing a pack, so still prefer the narrow
+   recipes. The rest of the
    lifecycle has recipes too: `just worktree-hydrate`,
    `just worktree-land [base_ref]`, and `just worktree-reap [--execute]` for
    orphans. `dev-tooling/*` is gitignored and byte-verified against the package
