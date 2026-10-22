@@ -270,12 +270,19 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // entry is registry-backed and names no machine; `default_factory` names
     // `legacy`), both carried by Scenario 34:
     // 288 normative clauses, 22/160/24/82.
+    // The v055 fork-drift-gate revision adds a non-functional-requirements.md
+    // `### Workflow-Fork Drift Gate` subsection with four clauses (the check
+    // runs in `just check` against the pinned release; an unrecorded divergence
+    // fails naming the file; a newer install is a currency warning; the pin
+    // advances only through a committed re-sync), all carried by Contributor
+    // Scenario K:
+    // 292 normative clauses, 22/160/24/86.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 22_usize),
         ("contracts.md", 160),
         ("constraints.md", 24),
-        ("non-functional-requirements.md", 82),
+        ("non-functional-requirements.md", 86),
     ];
     let mut total = 0;
     for (file, want) in cases {
@@ -285,7 +292,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 288,
+        total, 292,
         "total normative clauses across the console spec"
     );
     Ok(())

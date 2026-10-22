@@ -1293,6 +1293,31 @@
     ]
   },
   {
+    "scenario": "Contributor Scenario K -- The fork-drift gate judges the workflow fork against its pinned orchestrator release",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: top-of-pyramid integration tests in crates/console-fork-drift-check should prove the v055 Workflow-Fork Drift Gate clauses: the verdict is taken against the orchestrator release the committed fork-pin fixture pins, a host whose installed orchestrator release is newer than the pin gets a currency warning naming both releases and a zero exit, an unrecorded divergence from the pinned release's bundle exits non-zero naming the file, and two hosts with different installs return the same verdict for one commit. Registered pending at ratification time because the check today compares against the host's installed build; the implementing work-item is livespec-console-beads-fabro-lavbfp (the pin-advancing re-sync pull request is livespec-console-beads-fabro-d2kujl), and console-spec-check requires every live scenario to carry a non-empty test registration.",
+    "work_item": "livespec-console-beads-fabro-lavbfp",
+    "clauses": [
+      {
+        "gap_id": "gap-4ms3hzgf",
+        "scenario": "Contributor Scenario K -- The fork-drift gate judges the workflow fork against its pinned orchestrator release"
+      },
+      {
+        "gap_id": "gap-sbnimuej",
+        "scenario": "Contributor Scenario K -- The fork-drift gate judges the workflow fork against its pinned orchestrator release"
+      },
+      {
+        "gap_id": "gap-dezu37av",
+        "scenario": "Contributor Scenario K -- The fork-drift gate judges the workflow fork against its pinned orchestrator release"
+      },
+      {
+        "gap_id": "gap-7byquasf",
+        "scenario": "Contributor Scenario K -- The fork-drift gate judges the workflow fork against its pinned orchestrator release"
+      }
+    ]
+  },
+  {
     "scenario": "Scenario 11 -- Human valve and policy-edit commands map onto the orchestrator surface",
     "scenario_file": "scenarios.md",
     "test": "TODO",
