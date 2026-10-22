@@ -156,13 +156,76 @@ impl Finding {
     }
 }
 
-/// Outcome of the upstream lane.
+/// Where the host's installed orchestrator release stands relative to the
+/// pinned one.
+///
+/// CURRENCY ONLY — never a verdict, and never a finding. The Dispatcher runs the
+/// console's COMMITTED fork, not the installed bundle, so an install that has
+/// moved past the pin says the pin is due a reviewed re-sync; it says nothing
+/// about whether the committed fork is correct. Treating it as a failure is the
+/// defect this crate was rewritten to remove.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UpstreamLane {
-    /// Upstream was resolved and compared.
-    Compared { plugin_version: String },
-    /// Upstream could not be resolved; the lane did not run.
-    Skipped { reason: String },
+pub enum Currency {
+    /// The host has the pinned release installed. Nothing to report.
+    AtThePin { release: String },
+    /// The host has some OTHER release installed. In practice that means a newer
+    /// one — `ensure-plugins` only ever moves a host forward — but two plugin
+    /// cache hashes cannot be ORDERED, so this records a difference and says so
+    /// rather than claiming an ordering it cannot see.
+    PastThePin { pinned: String, installed: String },
+    /// No installed release could be resolved. Unremarkable: CI carries no
+    /// orchestrator plugin, and the verdict no longer needs one.
+    Unresolved { pinned: String, reason: String },
+}
+
+impl Currency {
+    /// One line for the current and unresolved cases; a warning NAMING BOTH
+    /// RELEASES on its first line, then the reasoning, when the host has moved
+    /// past the pin.
+    #[must_use]
+    pub fn render(&self) -> String {
+        match self {
+            Self::AtThePin { release } => format!(
+                "console-fork-drift-check: installed orchestrator release {release} is the \
+                 pinned release"
+            ),
+            Self::PastThePin { pinned, installed } => format!(
+                "console-fork-drift-check: CURRENCY WARNING — installed orchestrator release \
+                 {installed} differs from the pinned release {pinned} (in practice the install \
+                 is newer: `ensure-plugins` only moves a host forward)\n  \
+                 The verdict above was taken against the PINNED release, and is unaffected: a \
+                 Factory dispatch runs this repository's COMMITTED fork, never the installed \
+                 bundle.\n  \
+                 Advance the pin only through a change that re-syncs the fork against the newer \
+                 release and re-takes the pins, so the upstream diff is design-reviewed as that \
+                 change's review."
+            ),
+            Self::Unresolved { pinned, reason } => format!(
+                "console-fork-drift-check: no installed orchestrator release resolved — \
+                 {reason}. The verdict is unaffected: it is taken against the pinned release \
+                 {pinned}."
+            ),
+        }
+    }
+}
+
+/// Where the host stands, from the pinned release and whatever install
+/// [`resolve_upstream_dir`] could resolve.
+#[must_use]
+pub fn currency(pinned: &str, installed: &Result<(PathBuf, String), String>) -> Currency {
+    match installed {
+        Ok((_bundle, installed)) if installed == pinned => Currency::AtThePin {
+            release: installed.clone(),
+        },
+        Ok((_bundle, installed)) => Currency::PastThePin {
+            pinned: pinned.to_owned(),
+            installed: installed.clone(),
+        },
+        Err(reason) => Currency::Unresolved {
+            pinned: pinned.to_owned(),
+            reason: reason.clone(),
+        },
+    }
 }
 
 /// SHA-256 of some bytes, lowercase hex.
@@ -542,6 +605,61 @@ mod tests {
             parse_pinned_release("{not json").is_err(),
             "malformed JSON is rejected",
         );
+    }
+
+    #[test]
+    fn currency_at_the_pin_is_reported_without_a_warning() {
+        let at_the_pin = currency(
+            "b8eafc6f1d10",
+            &Ok((PathBuf::from("/install"), "b8eafc6f1d10".to_owned())),
+        );
+        assert_eq!(
+            at_the_pin,
+            Currency::AtThePin {
+                release: "b8eafc6f1d10".to_owned()
+            }
+        );
+        let rendered = at_the_pin.render();
+        check(!rendered.contains("CURRENCY WARNING"), &rendered);
+        check(rendered.contains("b8eafc6f1d10"), &rendered);
+    }
+
+    #[test]
+    fn currency_past_the_pin_warns_naming_both_releases_on_one_line() {
+        let past_the_pin = currency(
+            "b8eafc6f1d10",
+            &Ok((PathBuf::from("/install"), "0f1e2d3c4b5a".to_owned())),
+        );
+        assert_eq!(
+            past_the_pin,
+            Currency::PastThePin {
+                pinned: "b8eafc6f1d10".to_owned(),
+                installed: "0f1e2d3c4b5a".to_owned()
+            }
+        );
+        let rendered = past_the_pin.render();
+        let warning = rendered
+            .lines()
+            .find(|line| line.contains("CURRENCY WARNING"))
+            .unwrap_or_default();
+        check(warning.contains("b8eafc6f1d10"), &rendered);
+        check(warning.contains("0f1e2d3c4b5a"), &rendered);
+    }
+
+    #[test]
+    fn currency_with_no_resolvable_install_says_the_verdict_is_unaffected() {
+        let unresolved = currency("b8eafc6f1d10", &Err("no plugin installed".to_owned()));
+        assert_eq!(
+            unresolved,
+            Currency::Unresolved {
+                pinned: "b8eafc6f1d10".to_owned(),
+                reason: "no plugin installed".to_owned()
+            }
+        );
+        let rendered = unresolved.render();
+        check(!rendered.contains("CURRENCY WARNING"), &rendered);
+        check(rendered.contains("no plugin installed"), &rendered);
+        check(rendered.contains("unaffected"), &rendered);
     }
 
     #[test]
