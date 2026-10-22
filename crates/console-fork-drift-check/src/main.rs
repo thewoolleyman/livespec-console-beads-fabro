@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use console_fork_drift_check::{
-    FORK_DIR, PIN_MANIFEST, UpstreamLane, check_local, check_upstream, digest, digest_for_pin,
-    parse_pins, resolve_upstream_dir,
+    FORK_DIR, PIN_MANIFEST, check_local, digest, digest_for_pin, parse_pinned_release, parse_pins,
+    resolve_upstream_dir,
 };
 
 fn main() -> ExitCode {
@@ -74,39 +74,29 @@ fn run(repo_root: &Path, home: &Path) -> Result<(), String> {
     let manifest = std::fs::read_to_string(&manifest_path)
         .map_err(|err| format!("cannot read {}: {err}", manifest_path.display()))?;
     let pins = parse_pins(&manifest)?;
+    let pinned_release = parse_pinned_release(&manifest)?;
     let fork_dir = repo_root.join(FORK_DIR);
 
-    let mut findings = check_local(&pins, &fork_dir);
+    let findings = check_local(&pins, &fork_dir);
 
-    let lane = match resolve_upstream_dir(home, &absolute_root(repo_root)) {
-        Ok((upstream_dir, version)) => {
-            findings.extend(check_upstream(&pins, &upstream_dir));
-            UpstreamLane::Compared {
-                plugin_version: version,
-            }
+    // The verdict names the release it was taken against, and that release comes
+    // from the COMMITTED fixture — never from whatever the host installed. The
+    // installed build is reported beside it as currency, never as a verdict:
+    // a Factory dispatch runs the console's committed fork, so an install that
+    // has moved past the pin is a currency signal and never a correctness one.
+    println!(
+        "console-fork-drift-check: {} pinned file(s) judged against orchestrator release \
+         {pinned_release}, as pinned in {PIN_MANIFEST}",
+        pins.len()
+    );
+    match resolve_upstream_dir(home, &absolute_root(repo_root)) {
+        Ok((_bundle, installed)) => {
+            println!("console-fork-drift-check: installed orchestrator release {installed}");
         }
-        Err(reason) => UpstreamLane::Skipped { reason },
-    };
-
-    // The skip is printed LOUDLY and always, never swallowed. A gate that
-    // quietly does nothing in the venue that matters is the exact failure this
-    // crate exists to prevent.
-    match &lane {
-        UpstreamLane::Compared { plugin_version } => {
+        Err(reason) => {
             println!(
-                "console-fork-drift-check: compared {} pinned file(s) against installed plugin {plugin_version}",
-                pins.len()
-            );
-        }
-        UpstreamLane::Skipped { reason } => {
-            println!(
-                "console-fork-drift-check: UPSTREAM LANE SKIPPED — {reason}.\n  \
-                 The hermetic lane still ran ({} pinned file(s) checked against the tree).\n  \
-                 Upstream comparison needs the orchestrator plugin installed; CI does not\n  \
-                 carry it, and provisioning it there would require editing\n  \
-                 .github/workflows/, which factory branches must not do. This lane is\n  \
-                 covered on any machine that dispatches, including the lefthook pre-push run.",
-                pins.len()
+                "console-fork-drift-check: installed orchestrator release unresolved — {reason}. \
+                 The verdict is unaffected: it is taken against the pinned release."
             );
         }
     }

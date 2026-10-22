@@ -179,6 +179,36 @@ pub fn digest(bytes: &[u8]) -> String {
         })
 }
 
+/// The orchestrator release the manifest pins, from `upstream_plugin_version`.
+///
+/// That value is the plugin cache hash, which is the orchestrator release tag's
+/// own commit (`v0.231.4` is `b8eafc6f1d10`), so the release the fixture names
+/// is identified by COMMITTED state and the gate's verdict can be a function of
+/// committed state alone — the same on every host, whatever each has installed.
+///
+/// # Errors
+/// Returns a message when the JSON is malformed, or when the key is absent or
+/// blank: a fixture that names no release can judge nothing host-independently,
+/// and silently judging against the host's install instead is the very defect
+/// this crate was rewritten to remove.
+pub fn parse_pinned_release(manifest_json: &str) -> Result<String, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(manifest_json).map_err(|err| format!("{PIN_MANIFEST}: {err}"))?;
+    let release = root
+        .get("upstream_plugin_version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if release.is_empty() {
+        return Err(format!(
+            "{PIN_MANIFEST}: carries no `upstream_plugin_version`. The verdict is taken against \
+             the orchestrator release the fixture PINS, so a fixture naming no release cannot \
+             be judged against anything."
+        ));
+    }
+    Ok(release.to_owned())
+}
+
 /// Parse the pin manifest.
 ///
 /// # Errors
@@ -484,6 +514,34 @@ mod tests {
         let mut expected = pin("prompts/pr.md", Some("aa"), true, "synced");
         expected.upstream_sha256_ignoring_docker_pin = Some("bb".to_owned());
         assert_eq!(parsed, vec![expected]);
+    }
+
+    #[test]
+    fn parse_pinned_release_reads_the_release_the_fixture_names() {
+        assert_eq!(
+            parse_pinned_release(r#"{"upstream_plugin_version":"b8eafc6f1d10","files":[]}"#),
+            Ok("b8eafc6f1d10".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_pinned_release_rejects_a_fixture_that_names_no_release() {
+        check(
+            parse_pinned_release(r#"{"files":[]}"#).is_err(),
+            "a fixture naming no release is rejected",
+        );
+        check(
+            parse_pinned_release(r#"{"upstream_plugin_version":"  ","files":[]}"#).is_err(),
+            "a blank release is rejected",
+        );
+    }
+
+    #[test]
+    fn parse_pinned_release_rejects_malformed_json() {
+        check(
+            parse_pinned_release("{not json").is_err(),
+            "malformed JSON is rejected",
+        );
     }
 
     #[test]
