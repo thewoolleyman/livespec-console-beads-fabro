@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use console_fork_drift_check::{
-    FORK_DIR, PIN_MANIFEST, check_local, currency, digest, digest_for_pin, parse_pinned_release,
-    parse_pins, resolve_upstream_dir,
+    FORK_DIR, PIN_MANIFEST, check_fork_against_pinned_release, check_local, currency, digest,
+    digest_for_pin, parse_pinned_release, parse_pins, resolve_upstream_dir,
 };
 
 fn main() -> ExitCode {
@@ -77,7 +77,12 @@ fn run(repo_root: &Path, home: &Path) -> Result<(), String> {
     let pinned_release = parse_pinned_release(&manifest)?;
     let fork_dir = repo_root.join(FORK_DIR);
 
-    let findings = check_local(&pins, &fork_dir);
+    let mut findings = check_local(&pins, &fork_dir);
+    findings.extend(check_fork_against_pinned_release(
+        &pins,
+        &fork_dir,
+        &pinned_release,
+    ));
 
     // The verdict names the release it was taken against, and that release comes
     // from the COMMITTED fixture — never from whatever the host installed. The
@@ -102,8 +107,10 @@ fn run(repo_root: &Path, home: &Path) -> Result<(), String> {
         println!("console-fork-drift-check: fork in lockstep with its pins");
         return Ok(());
     }
-    let mut report =
-        String::from("console-fork-drift-check: the committed .fabro fork drifted from its pins\n");
+    let mut report = format!(
+        "console-fork-drift-check: the committed .fabro fork does not match orchestrator \
+         release {pinned_release}, which {PIN_MANIFEST} pins\n"
+    );
     for finding in &findings {
         report.push_str("  - ");
         report.push_str(&finding.render());
@@ -111,7 +118,10 @@ fn run(repo_root: &Path, home: &Path) -> Result<(), String> {
     }
     report.push_str(
         "\nThis gate exists because upstream once fixed the pr-stage publish leg and our\n\
-         fork silently kept the broken one for three weeks (bd-ib-qq7f / PR #905).\n",
+         fork silently kept the broken one for three weeks (bd-ib-qq7f / PR #905).\n\
+         It judges COMMITTED state only, so this verdict is the same on every host:\n\
+         an orchestrator release that has moved past the pin is reported above as\n\
+         currency and is never this failure.\n",
     );
     Err(report)
 }
@@ -139,16 +149,28 @@ fn refresh_pins(repo_root: &Path, home: &Path) -> Result<(), String> {
                 .ok()
                 .map(|bytes| upstream_sha_field(path, &bytes));
             let present_in_fork = fork_dir.join(path).is_file();
-            let reason = previous.iter().find(|pin| &pin.path == path).map_or_else(
+            let recorded = previous.iter().find(|pin| &pin.path == path);
+            let reason = recorded.map_or_else(
                 || "TODO: explain this divergence".to_owned(),
                 |pin| pin.reason.clone(),
             );
+            // A recorded divergence is carried FORWARD. Dropping it on a refresh
+            // would turn the next run red on a difference someone had already
+            // explained, which is how a gate teaches people to bypass it.
+            let divergence = recorded
+                .and_then(|pin| pin.fork_divergence.as_ref())
+                .map_or_else(String::new, |divergence| {
+                    format!(
+                        "      \"fork_divergence\": {},\n",
+                        serde_json::to_string(divergence).unwrap_or_else(|_| "\"\"".to_owned())
+                    )
+                });
             let (sha_key, sha_field) = upstream_sha.map_or_else(
                 || ("upstream_sha256", "null".to_owned()),
                 |(key, sha)| (key, format!("\"{sha}\"")),
             );
             format!(
-                "    {{\n      \"path\": \"{path}\",\n      \"{sha_key}\": {sha_field},\n      \"present_in_fork\": {present_in_fork},\n      \"reason\": {}\n    }}",
+                "    {{\n      \"path\": \"{path}\",\n      \"{sha_key}\": {sha_field},\n{divergence}      \"present_in_fork\": {present_in_fork},\n      \"reason\": {}\n    }}",
                 serde_json::to_string(&reason).unwrap_or_else(|_| "\"\"".to_owned())
             )
         })

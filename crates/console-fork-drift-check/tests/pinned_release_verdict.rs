@@ -44,6 +44,11 @@ const PINNED_BUNDLE_BODY: &str = "the implement prompt, as the pinned release sh
 /// The same file as the NEWER installed release ships it — the bundle change
 /// that used to redden `master` on its own.
 const NEWER_BUNDLE_BODY: &str = "the implement prompt, as the NEWER release ships it\n";
+/// OUR edit to a file the fixture records as taken verbatim: a divergence from
+/// the pinned release that nobody recorded. The old gate could not see this at
+/// all — it compared the PINS against the host's install and never read the
+/// committed fork's bytes (`livespec-console-beads-fabro-3r6`'s second defect).
+const OUR_EDIT_BODY: &str = "the implement prompt, with a local edit nobody recorded\n";
 
 #[test]
 fn the_verdict_is_taken_against_the_pinned_release_not_the_installed_bundle() -> Result<(), String>
@@ -115,10 +120,107 @@ fn currency_warning(rendered: &str) -> Option<&str> {
         .find(|line| line.contains("CURRENCY WARNING"))
 }
 
+#[test]
+fn a_fork_file_differing_from_the_pinned_bundle_fails_naming_the_file() -> Result<(), String> {
+    let root = repository("unrecorded", OUR_EDIT_BODY)?;
+    let home = installed_plugin("unrecorded", &root, PINNED_RELEASE, PINNED_BUNDLE_BODY)?;
+
+    let output = gate(&root, &home)?;
+
+    let rendered = rendered(&output);
+    assert!(
+        !output.status.success(),
+        "a fork file nobody recorded a divergence for must fail against its pinned release: \
+         {rendered}"
+    );
+    assert!(
+        rendered.contains(FORKED_FILE),
+        "the failure NAMES the divergent file, or a red build is a puzzle: {rendered}"
+    );
+    assert!(
+        rendered.contains(PINNED_RELEASE),
+        "the failure names the release it was taken against: {rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_divergence_recorded_in_the_fixture_is_clean() -> Result<(), String> {
+    let root = repository_with_recorded_divergence(
+        "recorded",
+        OUR_EDIT_BODY,
+        "Divergence: the console builds Rust, so this stage names the python-rust sandbox image.",
+    )?;
+    let home = installed_plugin("recorded", &root, PINNED_RELEASE, PINNED_BUNDLE_BODY)?;
+
+    let output = gate(&root, &home)?;
+
+    let rendered = rendered(&output);
+    assert!(
+        output.status.success(),
+        "a divergence recorded WITH a reason is what a fork IS; the gate judges the unrecorded \
+         ones: {rendered}"
+    );
+    Ok(())
+}
+
+/// Ground truth, and the reason the verdict can be hermetic at all: THIS
+/// repository's own committed fork, judged against the release its own committed
+/// fixture pins, with an empty `$HOME` that resolves no plugin whatsoever. If
+/// this ever goes red, either the fork was edited without re-taking its pins or
+/// a pin was re-taken without the fork — both of which are the finding.
+#[test]
+fn this_repositorys_committed_fork_matches_the_release_its_fixture_pins() -> Result<(), String> {
+    let home = scratch("home-this-repository")?;
+
+    let output = gate(&repository_root()?, &home)?;
+
+    let rendered = rendered(&output);
+    assert!(
+        output.status.success(),
+        "this repository's committed fork must match the orchestrator release it pins, with no \
+         plugin installed anywhere: {rendered}"
+    );
+    assert!(
+        currency_warning(&rendered).is_none(),
+        "an unresolvable install is not a currency warning — nothing was compared: {rendered}"
+    );
+    Ok(())
+}
+
+/// This repository's root: two levels above this crate's manifest.
+fn repository_root() -> Result<PathBuf, String> {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "cannot resolve the repository root from CARGO_MANIFEST_DIR".to_owned())
+}
+
 /// A throwaway repository root: the pin fixture naming [`PINNED_RELEASE`], and a
-/// committed fork whose one file carries `fork_body`.
+/// committed fork whose one file carries `fork_body`, recorded as taken verbatim.
 fn repository(label: &str, fork_body: &str) -> Result<PathBuf, String> {
+    fixture_repository(label, fork_body, None)
+}
+
+/// The same, with `divergence` recorded against the forked file.
+fn repository_with_recorded_divergence(
+    label: &str,
+    fork_body: &str,
+    divergence: &str,
+) -> Result<PathBuf, String> {
+    fixture_repository(label, fork_body, Some(divergence))
+}
+
+fn fixture_repository(
+    label: &str,
+    fork_body: &str,
+    divergence: Option<&str>,
+) -> Result<PathBuf, String> {
     let root = scratch(&format!("repo-{label}"))?;
+    let divergence = divergence.map_or_else(String::new, |recorded| {
+        format!("      \"fork_divergence\": \"{recorded}\",\n")
+    });
     write(
         &root.join(PIN_MANIFEST),
         &format!(
@@ -128,7 +230,7 @@ fn repository(label: &str, fork_body: &str) -> Result<PathBuf, String> {
     {{
       "path": "{FORKED_FILE}",
       "upstream_sha256": "{}",
-      "present_in_fork": true,
+{divergence}      "present_in_fork": true,
       "reason": "Taken VERBATIM from the pinned release."
     }}
   ]

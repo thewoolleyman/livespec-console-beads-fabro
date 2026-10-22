@@ -15,45 +15,59 @@
 //! LEG WAS PRESENT — `.fabro/` was covered by no gate at all. This crate is that
 //! missing assertion.
 //!
-//! # Why mostly hash pins and not byte-equality-modulo-allowlist
+//! # Why hash pins, and not a live diff against a bundle
 //!
-//! The obvious design — assert the fork equals upstream except for a small
-//! allowlist — does NOT work here, and adopting it would recreate the very
-//! failure it is meant to catch. Six of the seven forked files diverge
-//! deliberately and substantially: our review gate is advisory/ship-on-cap by
-//! recorded decision (`workflow.fabro`, work-item `bd-ib-egms32`) while
-//! upstream's is blocking, and upstream has since grown a whole `disposition`
-//! stage we do not run. An allowlist wide enough to tolerate that would swallow
-//! nearly everything and the gate would pass on anything.
+//! The bundle the verdict is taken against is the one the PINNED release ships,
+//! and that is not a thing any host reliably has on disk: a host installs
+//! whatever `ensure-plugins` last gave it, and CI installs nothing. Taking the
+//! verdict from whatever bundle happened to be present is precisely the defect
+//! recorded below. So the fixture carries that bundle's digests, per file, as
+//! COMMITTED state — which is also what lets the gate see OUR edits to the fork,
+//! something a pins-versus-install comparison never could
+//! (`livespec-console-beads-fabro-3r6`).
 //!
-//! So this pins, per file, the UPSTREAM digest last reconciled against, plus a
-//! human reason for the divergence. The gate fires when UPSTREAM MOVES, naming
-//! the file, which forces a conscious sync-or-re-pin. The one narrower exception
-//! is `workflow.toml`: its upstream docker value is a known-permanent Python-only
-//! image pin that moves on upstream's cadence, so that single quoted value is
-//! normalized before hashing. Every other byte in `workflow.toml` remains pinned.
-//! The gate is deliberately indifferent to how far our copy has diverged — that
-//! is the point of a fork — and it is immune to our own `workflow.toml` being
-//! rewritten by the pin-bump automation, because it pins upstream's bytes, never
-//! ours.
+//! A per-file digest plus a recorded divergence also keeps a deliberate fork
+//! legible. The fork's standing policy is zero divergence — every prompt and
+//! both graph files are taken verbatim, the sandbox-image line excepted — but
+//! that policy is a choice, not a mechanism: a file may earn a divergence by
+//! recording one, and only then.
 //!
-//! # Two lanes, and an honest gap
+//! So this pins, per file, the digest of the file as the pinned orchestrator
+//! release ships it, plus a human reason. The one narrower exception is
+//! `workflow.toml`: the sandbox-image line is the fork's reason for existing
+//! (`python-rust-agent-`, because the console builds Rust, against upstream's
+//! `python-agent-`), and that line also moves on the release fan-out's cadence
+//! on BOTH sides, so it is normalized away before hashing. Every other byte in
+//! `workflow.toml` is pinned.
 //!
-//! - `check_local`: hermetic. Asserts the manifest describes exactly the fork
-//!   files that exist — no undeclared file added, none declared-but-missing.
-//!   Runs everywhere, including CI, with no plugin installed.
-//! - `check_upstream`: needs the installed orchestrator plugin. Compares live
-//!   upstream digests against the pinned ones.
+//! # The verdict is a function of COMMITTED state
 //!
-//! `check_upstream` CANNOT run in CI today: the orchestrator plugin is not
-//! installed there, and provisioning it would mean editing
-//! `.github/workflows/`, which factory branches must not do (that is what
-//! `just check-no-workflow-edits` exists to enforce). Rather than pretend
-//! otherwise, an unresolvable plugin is reported as an explicit, loud SKIP naming
-//! the reason — never a silent pass. The lane where it does run is the one that
-//! matters most in practice: every `just check` on a machine that dispatches,
-//! including the `lefthook` pre-push hook, which is where a fork edit is made and
-//! where a dispatch is launched.
+//! - `check_local`: the manifest describes exactly the fork files that exist —
+//!   no undeclared file added, none declared-but-missing, every pin explained.
+//! - `check_fork_against_pinned_release`: THE VERDICT. The committed fork's
+//!   bytes against the digests the fixture records for the release named by its
+//!   `upstream_plugin_version`, which is the plugin cache hash and therefore the
+//!   release tag's own commit.
+//!
+//! Neither needs a plugin, a network or a host, so one console commit has ONE
+//! verdict everywhere — including CI, which carries no orchestrator plugin and
+//! could not be given one without editing `.github/workflows/` (which factory
+//! branches must not do).
+//!
+//! That is a deliberate correction. The gate used to take its verdict from the
+//! workflow bundle of whatever orchestrator build the HOST had installed, so
+//! every orchestrator release that changed that bundle turned console `master`
+//! red on every host that ran `ensure-plugins`, with no console commit at all —
+//! refusing every push and failing every post-merge janitor until a human
+//! hand-ran a design review plus `just refresh-fork-upstream-pins` through a PR.
+//! Three recoveries in three days (R316 / PR 1256, R498 / PR 1260, R620 /
+//! PR 1268) earned work-item `livespec-console-beads-fabro-lavbfp` and spec v055
+//! Contributor Scenario K. The Dispatcher runs the console's COMMITTED fork and
+//! never the installed bundle, so lag behind the newest release is a CURRENCY
+//! matter — see [`Currency`], which names both releases and never fails the gate
+//! — while the pin advances only through a change that re-syncs the fork and
+//! re-takes the pins, so the upstream diff is design-reviewed as that change's
+//! review.
 
 #![forbid(unsafe_code)]
 
@@ -75,18 +89,24 @@ pub const FORK_DIR: &str = ".fabro/workflows/implement-work-item";
 pub struct Pin {
     /// Path relative to [`FORK_DIR`].
     pub path: String,
-    /// SHA-256 of the UPSTREAM file's bytes at the last reconciliation, or
-    /// `None` when upstream is expected NOT to carry this path.
+    /// SHA-256 of this file's bytes AS THE PINNED RELEASE SHIPS THEM, or `None`
+    /// when that release is expected NOT to carry this path. The field keeps its
+    /// `upstream_` name because the committed fixture's keys are these names.
     pub upstream_sha256: Option<String>,
-    /// SHA-256 of the UPSTREAM file after applying this crate's single
-    /// path-scoped normalizer. Used only for `workflow.toml`, where the
-    /// upstream Python-only docker image value is deliberately ignored.
+    /// The same digest after applying this crate's single path-scoped
+    /// normalizer. Used only for `workflow.toml`, whose sandbox-image line is
+    /// deliberately ignored on both sides.
     pub upstream_sha256_ignoring_docker_pin: Option<String>,
     /// Whether our fork is expected to carry this path. `false` records a
     /// deliberate omission (upstream has it, we do not).
     pub present_in_fork: bool,
     /// Why this file diverges, in one line. Never empty.
     pub reason: String,
+    /// Set, and non-blank, when OUR committed copy deliberately differs from the
+    /// pinned release's bytes. Without it, any difference between the fork and
+    /// the pinned bundle is a finding — which is what keeps a local edit to the
+    /// fork visible instead of being absorbed into the prose of `reason`.
+    pub fork_divergence: Option<String>,
 }
 
 /// A single gate failure. Always names the file.
@@ -96,17 +116,20 @@ pub enum Finding {
     UndeclaredForkFile { path: String },
     /// The manifest declares a fork file that is missing from the tree.
     DeclaredButMissing { path: String },
-    /// Upstream's bytes changed since the pin was taken.
-    UpstreamMoved {
+    /// Our committed copy differs from the pinned release's bytes, and the
+    /// fixture records no divergence for it.
+    ForkDivergedFromPinnedRelease {
         path: String,
+        pinned_release: String,
         pinned: String,
-        live: String,
-        reason: String,
+        fork: String,
     },
-    /// Upstream no longer carries a path we pinned a digest for.
-    UpstreamGone { path: String, pinned: String },
-    /// Upstream grew a path the manifest never anticipated.
-    UpstreamAdded { path: String },
+    /// Our fork carries a path the pinned release does not — the extreme case of
+    /// differing from the bundle — with no divergence recorded for it.
+    ForkFileAbsentFromPinnedRelease {
+        path: String,
+        pinned_release: String,
+    },
     /// A pin carries no reason. A divergence nobody explained is how the last
     /// one survived.
     MissingReason { path: String },
@@ -125,27 +148,29 @@ impl Finding {
             Self::DeclaredButMissing { path } => {
                 format!("{path}: pinned in {PIN_MANIFEST} but missing from {FORK_DIR}.")
             }
-            Self::UpstreamMoved {
+            Self::ForkDivergedFromPinnedRelease {
                 path,
+                pinned_release,
                 pinned,
-                live,
-                reason,
+                fork,
             } => format!(
-                "{path}: UPSTREAM MOVED since this pin was taken \
-                 (pinned {}, live {}). Recorded divergence: {reason}. \
-                 Review upstream's change and either port it into the fork or \
-                 re-pin with an updated reason via `just refresh-fork-upstream-pins`.",
+                "{path}: the COMMITTED fork differs from orchestrator release \
+                 {pinned_release}, which {PIN_MANIFEST} pins (pinned {}, fork {}), and no \
+                 `fork_divergence` is recorded for it. Either restore the pinned release's \
+                 bytes, or record the divergence with a reason — and if the intent was to \
+                 ADVANCE the pin, re-sync the fork and re-take the pins so the upstream diff \
+                 is design-reviewed.",
                 &pinned[..pinned.len().min(12)],
-                &live[..live.len().min(12)],
+                &fork[..fork.len().min(12)],
             ),
-            Self::UpstreamGone { path, pinned } => format!(
-                "{path}: pinned at upstream {} but upstream no longer carries \
-                 this path.",
-                &pinned[..pinned.len().min(12)],
-            ),
-            Self::UpstreamAdded { path } => format!(
-                "{path}: upstream carries this path but {PIN_MANIFEST} does not \
-                 mention it — a whole stage or prompt may have been added upstream."
+            Self::ForkFileAbsentFromPinnedRelease {
+                path,
+                pinned_release,
+            } => format!(
+                "{path}: the COMMITTED fork carries this path but orchestrator release \
+                 {pinned_release}, which {PIN_MANIFEST} pins, does not, and no \
+                 `fork_divergence` is recorded for it. A file upstream never had is the \
+                 widest divergence there is; record it with a reason or remove it."
             ),
             Self::MissingReason { path } => {
                 format!(
@@ -309,12 +334,17 @@ pub fn parse_pins(manifest_json: &str) -> Result<Vec<Pin>, String> {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
+            let fork_divergence = entry
+                .get("fork_divergence")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
             Ok(Pin {
                 path,
                 upstream_sha256,
                 upstream_sha256_ignoring_docker_pin,
                 present_in_fork,
                 reason,
+                fork_divergence,
             })
         })
         .collect()
@@ -376,11 +406,24 @@ pub fn check_local(pins: &[Pin], fork_dir: &Path) -> Vec<Finding> {
 }
 
 const WORKFLOW_TOML: &str = "workflow.toml";
-const UPSTREAM_DOCKER_PREFIX: &str =
-    r#"docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-"#;
-const NORMALIZED_UPSTREAM_DOCKER_LINE: &str =
+/// The sandbox-image line, up to the tag. Deliberately stops BEFORE the image
+/// flavour: upstream's is `python-agent-`, the fork's is `python-rust-agent-`
+/// because the console builds Rust, and that one value is `workflow.toml`'s
+/// whole reason for being forked. Normalizing it on BOTH sides is what lets the
+/// fork be compared against the pinned release at all.
+const DOCKER_IMAGE_LINE_PREFIX: &str = r#"docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:"#;
+/// The canonical form every sandbox-image line normalizes to.
+///
+/// These BYTES are load-bearing and must not be tidied: the committed
+/// `upstream_sha256_ignoring_docker_pin` digests were taken under exactly this
+/// replacement, so changing it — even to something more neutral-looking than a
+/// `python-agent-` flavour the fork never uses — invalidates every pin in the
+/// fixture and can only be re-taken against a real orchestrator bundle.
+const NORMALIZED_DOCKER_IMAGE_LINE: &str =
     r#"docker = "ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-<ignored>""#;
 
+/// The digest a pin is compared on: raw bytes, except `workflow.toml`, whose
+/// sandbox-image line is normalized away first.
 #[must_use]
 pub fn digest_for_pin(path: &str, bytes: &[u8]) -> String {
     if path == WORKFLOW_TOML {
@@ -406,8 +449,8 @@ fn normalize_workflow_docker_pin(bytes: &[u8]) -> Vec<u8> {
             .map_or((line, ""), |body| (body, "\n"));
         let body = body.strip_suffix('\r').unwrap_or(body);
         let carriage_return = if line.ends_with("\r\n") { "\r" } else { "" };
-        if body.starts_with(UPSTREAM_DOCKER_PREFIX) && body.ends_with('"') {
-            normalized.push_str(NORMALIZED_UPSTREAM_DOCKER_LINE);
+        if body.starts_with(DOCKER_IMAGE_LINE_PREFIX) && body.ends_with('"') {
+            normalized.push_str(NORMALIZED_DOCKER_IMAGE_LINE);
         } else {
             normalized.push_str(body);
         }
@@ -417,39 +460,54 @@ fn normalize_workflow_docker_pin(bytes: &[u8]) -> Vec<u8> {
     normalized.into_bytes()
 }
 
-/// The upstream lane: compare live upstream digests against the pins.
+/// THE VERDICT: the committed fork, judged against the workflow bundle of the
+/// orchestrator release the fixture pins.
+///
+/// The fixture records that bundle BY DIGEST, per file, which is why this needs
+/// no plugin, no network and no host: it is a function of committed state alone,
+/// so one console commit has one verdict everywhere. A file whose bytes differ
+/// from the pinned release's is a finding unless the fixture records a
+/// `fork_divergence` for it — which is the one thing a fork is allowed to be.
 #[must_use]
-pub fn check_upstream(pins: &[Pin], upstream_dir: &Path) -> Vec<Finding> {
-    let declared: BTreeMap<&str, &Pin> = pins.iter().map(|pin| (pin.path.as_str(), pin)).collect();
+pub fn check_fork_against_pinned_release(
+    pins: &[Pin],
+    fork_dir: &Path,
+    pinned_release: &str,
+) -> Vec<Finding> {
     let mut findings = Vec::new();
-
     for pin in pins {
-        let path = upstream_dir.join(&pin.path);
-        let live = std::fs::read(&path)
-            .ok()
-            .map(|bytes| digest_for_pin(&pin.path, &bytes));
-        match (pinned_digest(pin), live) {
-            (Some(pinned), Some(live)) if *pinned != live => {
-                findings.push(Finding::UpstreamMoved {
-                    path: pin.path.clone(),
-                    pinned: pinned.clone(),
-                    live,
-                    reason: pin.reason.clone(),
-                });
-            }
-            (Some(pinned), None) => findings.push(Finding::UpstreamGone {
-                path: pin.path.clone(),
-                pinned: pinned.clone(),
-            }),
-            _ => {}
+        if !pin.present_in_fork || records_a_divergence(pin) {
+            continue;
         }
-    }
-    for present in walk_relative(upstream_dir) {
-        if !declared.contains_key(present.as_str()) {
-            findings.push(Finding::UpstreamAdded { path: present });
+        // An absent file is `check_local`'s `DeclaredButMissing`, not a
+        // divergence; reporting it twice says nothing new.
+        let Ok(bytes) = std::fs::read(fork_dir.join(&pin.path)) else {
+            continue;
+        };
+        let fork = digest_for_pin(&pin.path, &bytes);
+        match pinned_digest(pin) {
+            Some(pinned) if *pinned == fork => {}
+            Some(pinned) => findings.push(Finding::ForkDivergedFromPinnedRelease {
+                path: pin.path.clone(),
+                pinned_release: pinned_release.to_owned(),
+                pinned: pinned.clone(),
+                fork,
+            }),
+            None => findings.push(Finding::ForkFileAbsentFromPinnedRelease {
+                path: pin.path.clone(),
+                pinned_release: pinned_release.to_owned(),
+            }),
         }
     }
     findings
+}
+
+/// Whether the fixture records a deliberate divergence for this file. A blank
+/// value records nothing — the whole point is that someone wrote down why.
+fn records_a_divergence(pin: &Pin) -> bool {
+    pin.fork_divergence
+        .as_ref()
+        .is_some_and(|divergence| !divergence.trim().is_empty())
 }
 
 /// Resolve the installed orchestrator plugin's bundled workflow directory.
@@ -511,6 +569,9 @@ pub fn resolve_upstream_dir(home: &Path, project_root: &Path) -> Result<(PathBuf
 mod tests {
     use super::*;
 
+    /// The release every fixture in these tests pins.
+    const PINNED_RELEASE: &str = "b8eafc6f1d10";
+
     fn pin(path: &str, sha: Option<&str>, present: bool, reason: &str) -> Pin {
         Pin {
             path: path.to_owned(),
@@ -518,6 +579,7 @@ mod tests {
             upstream_sha256_ignoring_docker_pin: None,
             present_in_fork: present,
             reason: reason.to_owned(),
+            fork_divergence: None,
         }
     }
 
@@ -527,8 +589,14 @@ mod tests {
             upstream_sha256: None,
             upstream_sha256_ignoring_docker_pin: Some(sha.to_owned()),
             present_in_fork: true,
-            reason: "Rust fork keeps its own docker value".to_owned(),
+            reason: "Rust fork keeps its own sandbox image".to_owned(),
+            fork_divergence: None,
         }
+    }
+
+    /// The verdict over a fork directory, against [`PINNED_RELEASE`].
+    fn verdict(pins: &[Pin], fork_dir: &Path) -> Vec<Finding> {
+        check_fork_against_pinned_release(pins, fork_dir, PINNED_RELEASE)
     }
 
     /// Region-coverage note for the a2 slices: keep assertion failures routed
@@ -668,76 +736,193 @@ mod tests {
     }
 
     #[test]
-    fn upstream_moved_is_reported_with_the_file_named() {
-        let dir = scratch("moved");
-        let _ = std::fs::write(dir.join("prompts/pr.md"), b"NEW UPSTREAM");
-        let findings = check_upstream(
-            &[pin("prompts/pr.md", Some(&digest(b"OLD")), true, "forked")],
+    fn a_fork_file_differing_from_the_pinned_release_is_reported_with_the_file_named() {
+        let dir = scratch("diverged");
+        let _ = std::fs::write(dir.join("prompts/pr.md"), b"OUR UNRECORDED EDIT");
+        let findings = verdict(
+            &[pin(
+                "prompts/pr.md",
+                Some(&digest(b"AS THE PINNED RELEASE SHIPS IT")),
+                true,
+                "Taken verbatim.",
+            )],
             &dir,
         );
         check(
             matches!(
                 findings.as_slice(),
-                [Finding::UpstreamMoved { path, .. }] if path == "prompts/pr.md"
+                [Finding::ForkDivergedFromPinnedRelease { path, pinned_release, .. }]
+                    if path == "prompts/pr.md" && pinned_release == PINNED_RELEASE
             ),
-            "upstream movement is reported for prompts/pr.md",
+            "an unrecorded fork divergence is reported for prompts/pr.md",
         );
         let rendered = findings.first().map(Finding::render).unwrap_or_default();
         check(rendered.contains("prompts/pr.md"), &rendered);
-        check(rendered.contains("UPSTREAM MOVED"), &rendered);
+        check(rendered.contains(PINNED_RELEASE), &rendered);
     }
 
     #[test]
-    fn an_unchanged_upstream_is_clean() {
-        let dir = scratch("clean");
+    fn a_fork_matching_the_pinned_release_is_clean() {
+        let dir = scratch("matches");
         let _ = std::fs::write(dir.join("prompts/pr.md"), b"SAME");
-        let findings = check_upstream(
-            &[pin("prompts/pr.md", Some(&digest(b"SAME")), true, "forked")],
+        let findings = verdict(
+            &[pin(
+                "prompts/pr.md",
+                Some(&digest(b"SAME")),
+                true,
+                "Taken verbatim.",
+            )],
+            &dir,
+        );
+        assert_eq!(findings, vec![]);
+    }
+
+    /// A divergence the fixture RECORDS is what a fork is; the gate judges the
+    /// ones nobody wrote down.
+    #[test]
+    fn a_recorded_fork_divergence_is_clean() {
+        let dir = scratch("recorded-divergence");
+        let _ = std::fs::write(dir.join("prompts/pr.md"), b"OURS, DELIBERATELY");
+        let mut recorded = pin(
+            "prompts/pr.md",
+            Some(&digest(b"UPSTREAM")),
+            true,
+            "Taken verbatim except as recorded.",
+        );
+        recorded.fork_divergence = Some("Divergence: the console builds Rust.".to_owned());
+        assert_eq!(verdict(&[recorded], &dir), vec![]);
+    }
+
+    /// A BLANK `fork_divergence` records nothing, so it exempts nothing.
+    #[test]
+    fn a_blank_fork_divergence_exempts_nothing() {
+        let dir = scratch("blank-divergence");
+        let _ = std::fs::write(dir.join("prompts/pr.md"), b"OURS");
+        let mut blank = pin(
+            "prompts/pr.md",
+            Some(&digest(b"UPSTREAM")),
+            true,
+            "Taken verbatim.",
+        );
+        blank.fork_divergence = Some("   ".to_owned());
+        check(
+            matches!(
+                verdict(&[blank], &dir).as_slice(),
+                [Finding::ForkDivergedFromPinnedRelease { .. }]
+            ),
+            "a blank divergence record exempts nothing",
+        );
+    }
+
+    /// The fork carries a file the pinned release does not, and nobody recorded
+    /// why — the widest divergence there is.
+    #[test]
+    fn a_fork_file_the_pinned_release_never_carried_is_reported() {
+        let dir = scratch("fork-only");
+        let _ = std::fs::write(dir.join("prompts/ours-only.md"), b"OURS ALONE");
+        let findings = verdict(
+            &[pin(
+                "prompts/ours-only.md",
+                None,
+                true,
+                "TODO: explain this",
+            )],
+            &dir,
+        );
+        check(
+            matches!(
+                findings.as_slice(),
+                [Finding::ForkFileAbsentFromPinnedRelease { path, .. }]
+                    if path == "prompts/ours-only.md"
+            ),
+            "a fork-only file with no recorded divergence is reported",
+        );
+    }
+
+    /// A file the manifest declares ABSENT from the fork is `check_local`'s
+    /// business; the verdict never reads it.
+    #[test]
+    fn a_pin_not_present_in_the_fork_is_not_judged() {
+        let dir = scratch("absent-from-fork");
+        let findings = verdict(
+            &[pin(
+                "prompts/disposition.md",
+                Some("aa"),
+                false,
+                "upstream-only stage we do not run",
+            )],
+            &dir,
+        );
+        assert_eq!(findings, vec![]);
+    }
+
+    /// A declared file missing from the tree is reported ONCE, by `check_local`.
+    #[test]
+    fn a_declared_but_missing_fork_file_is_not_also_a_divergence() {
+        let dir = scratch("missing-not-diverged");
+        let findings = verdict(
+            &[pin("prompts/pr.md", Some("aa"), true, "Taken verbatim.")],
+            &dir,
+        );
+        assert_eq!(findings, vec![]);
+    }
+
+    /// `workflow.toml`'s sandbox-image line is the fork's reason for existing —
+    /// `python-rust-agent-` against upstream's `python-agent-` — AND it moves on
+    /// the release fan-out's cadence on both sides. Normalizing it on both sides
+    /// is what makes the rest of the file comparable.
+    #[test]
+    fn the_workflow_sandbox_image_line_is_normalized_on_both_sides() {
+        let upstream = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.0.0\"\ncommit_timeout = \"10m\"\n";
+        let fork = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-agent-v1.126.0\"\ncommit_timeout = \"10m\"\n";
+        let dir = scratch("workflow-image-clean");
+        let _ = std::fs::write(dir.join(WORKFLOW_TOML), fork);
+        let findings = verdict(
+            &[workflow_pin(&digest_for_pin(WORKFLOW_TOML, upstream))],
             &dir,
         );
         assert_eq!(findings, vec![]);
     }
 
     #[test]
-    fn workflow_upstream_docker_pin_value_changes_are_clean() {
-        let old = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.0.0\"\ncommit_timeout = \"10m\"\n";
-        let new = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.99.0\"\ncommit_timeout = \"10m\"\n";
-        let dir = scratch("workflow-docker-clean");
-        let _ = std::fs::write(dir.join(WORKFLOW_TOML), new);
-        let findings = check_upstream(&[workflow_pin(&digest_for_pin(WORKFLOW_TOML, old))], &dir);
-        assert_eq!(findings, vec![]);
-    }
-
-    #[test]
-    fn workflow_upstream_non_docker_changes_still_move_the_pin() {
-        let old = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.0.0\"\ncommit_timeout = \"10m\"\n";
-        let new = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.99.0\"\ncommit_timeout = \"15m\"\n";
+    fn workflow_differences_outside_the_image_line_are_still_reported() {
+        let upstream = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.0.0\"\ncommit_timeout = \"10m\"\n";
+        let fork = b"steps = []\ndocker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-agent-v1.126.0\"\ncommit_timeout = \"15m\"\n";
         let dir = scratch("workflow-real-drift");
-        let _ = std::fs::write(dir.join(WORKFLOW_TOML), new);
-        let findings = check_upstream(&[workflow_pin(&digest_for_pin(WORKFLOW_TOML, old))], &dir);
+        let _ = std::fs::write(dir.join(WORKFLOW_TOML), fork);
+        let findings = verdict(
+            &[workflow_pin(&digest_for_pin(WORKFLOW_TOML, upstream))],
+            &dir,
+        );
         check(
             matches!(
                 findings.as_slice(),
-                [Finding::UpstreamMoved { path, .. }] if path == WORKFLOW_TOML
+                [Finding::ForkDivergedFromPinnedRelease { path, .. }] if path == WORKFLOW_TOML
             ),
-            "workflow non-docker drift is reported",
+            "a workflow difference outside the image line is reported",
         );
     }
 
+    /// Only the exact `docker = "<registry>:` form normalizes. A rewritten key or
+    /// changed spacing is a real difference, not an image-tag bump.
     #[test]
-    fn workflow_docker_pin_key_or_spacing_changes_still_move_the_pin() {
-        let old =
+    fn a_workflow_image_line_with_different_spacing_is_still_reported() {
+        let upstream =
             b"docker = \"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.0.0\"\n";
-        let new = b"docker=\"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.99.0\"\n";
+        let fork =
+            b"docker=\"ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-agent-v1.99.0\"\n";
         let dir = scratch("workflow-spacing-drift");
-        let _ = std::fs::write(dir.join(WORKFLOW_TOML), new);
-        let findings = check_upstream(&[workflow_pin(&digest_for_pin(WORKFLOW_TOML, old))], &dir);
+        let _ = std::fs::write(dir.join(WORKFLOW_TOML), fork);
+        let findings = verdict(
+            &[workflow_pin(&digest_for_pin(WORKFLOW_TOML, upstream))],
+            &dir,
+        );
         check(
             matches!(
                 findings.as_slice(),
-                [Finding::UpstreamMoved { path, .. }] if path == WORKFLOW_TOML
+                [Finding::ForkDivergedFromPinnedRelease { path, .. }] if path == WORKFLOW_TOML
             ),
-            "workflow docker key or spacing drift is reported",
+            "a rewritten image key or spacing is reported",
         );
     }
 
@@ -757,33 +942,6 @@ mod tests {
         assert_eq!(
             digest_for_pin(WORKFLOW_TOML, old),
             digest_for_pin(WORKFLOW_TOML, new)
-        );
-    }
-
-    #[test]
-    fn a_new_upstream_file_is_reported() {
-        let dir = scratch("added");
-        let _ = std::fs::write(dir.join("prompts/disposition.md"), b"NEW STAGE");
-        let findings = check_upstream(&[], &dir);
-        check(
-            matches!(
-                findings.as_slice(),
-                [Finding::UpstreamAdded { path }] if path == "prompts/disposition.md"
-            ),
-            "new upstream file is reported",
-        );
-    }
-
-    #[test]
-    fn an_upstream_file_that_vanished_is_reported() {
-        let dir = scratch("gone");
-        let findings = check_upstream(&[pin("prompts/pr.md", Some("aa"), true, "forked")], &dir);
-        check(
-            matches!(
-                findings.as_slice(),
-                [Finding::UpstreamGone { path, .. }] if path == "prompts/pr.md"
-            ),
-            "vanished upstream file is reported",
         );
     }
 
@@ -864,18 +1022,15 @@ mod tests {
             Finding::DeclaredButMissing {
                 path: "b.md".to_owned(),
             },
-            Finding::UpstreamMoved {
+            Finding::ForkDivergedFromPinnedRelease {
                 path: "c.md".to_owned(),
+                pinned_release: PINNED_RELEASE.to_owned(),
                 pinned: "0".repeat(64),
-                live: "1".repeat(64),
-                reason: "forked".to_owned(),
+                fork: "1".repeat(64),
             },
-            Finding::UpstreamGone {
+            Finding::ForkFileAbsentFromPinnedRelease {
                 path: "d.md".to_owned(),
-                pinned: "2".repeat(64),
-            },
-            Finding::UpstreamAdded {
-                path: "e.md".to_owned(),
+                pinned_release: PINNED_RELEASE.to_owned(),
             },
             Finding::MissingReason {
                 path: "f.md".to_owned(),
@@ -886,9 +1041,8 @@ mod tests {
             let named = match &case {
                 Finding::UndeclaredForkFile { path }
                 | Finding::DeclaredButMissing { path }
-                | Finding::UpstreamMoved { path, .. }
-                | Finding::UpstreamGone { path, .. }
-                | Finding::UpstreamAdded { path }
+                | Finding::ForkDivergedFromPinnedRelease { path, .. }
+                | Finding::ForkFileAbsentFromPinnedRelease { path, .. }
                 | Finding::MissingReason { path } => path.clone(),
             };
             check(rendered.starts_with(&named), &rendered);
@@ -898,11 +1052,11 @@ mod tests {
     /// Short digests must not panic the truncating renderer.
     #[test]
     fn render_tolerates_a_short_digest() {
-        let rendered = Finding::UpstreamMoved {
+        let rendered = Finding::ForkDivergedFromPinnedRelease {
             path: "c.md".to_owned(),
+            pinned_release: PINNED_RELEASE.to_owned(),
             pinned: "ab".to_owned(),
-            live: "cd".to_owned(),
-            reason: "r".to_owned(),
+            fork: "cd".to_owned(),
         }
         .render();
         check(rendered.contains("c.md"), &rendered);
