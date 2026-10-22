@@ -236,11 +236,32 @@
       // item's previous terminal run, so more than one in-flight dispatch
       // loses runs. Raise this again once cewr.5 lands.
       "wip_cap": 1,
+      // REGISTRY-BACKED, and that is the whole point: no committed entry names
+      // a machine. Coordinator rulings R318/R320 (2026-10-20) hold that a
+      // factory is bound to a machine only in the fleet gitops inventory's
+      // factory registry, which every dispatching host renders as
+      // /etc/livespec/fabro-factories.json; a dispatch resolves an entry from
+      // that file BY NAME. Ratified here as SPECIFICATION/constraints.md
+      // "Factory routing" (v054), carried by SPECIFICATION/scenarios.md
+      // "Scenario 34". Routing is UNCHANGED by the switch: the control node's
+      // registry maps `legacy` to the same hp :32276 instance the former `hp`
+      // entry named, and the former `vps` entry was already retired. A
+      // recorded item pin naming `hp`, `vps` or `default` falls back to
+      // `default_factory` under the ratified recorded-pin fallback.
+      //
+      // `petri` is deliberately absent: onboarding it needs this repository's
+      // own bin and secret-channel settings and is a separate decision.
+      //
+      // The console READS this table (crates/console-cli/src/factory_servers.rs)
+      // and resolves a `"registry": true` entry by name through
+      // crates/console-cli/src/factory_registry.rs, so it is not blinded by an
+      // entry that carries no `server` -- see
+      // crates/console-cli/tests/committed_factory_table_names_no_machine.rs,
+      // which asserts this table's shape against the committed bytes.
       "factories": {
-        "hp": { "server": "https://hp-xubuntu.perch-rudd.ts.net:32276" },
-        "vps": { "server": "https://vps.perch-rudd.ts.net:32276" }
+        "legacy": { "registry": true }
       },
-      "default_factory": "hp",
+      "default_factory": "legacy",
 
       // Per-node ACP turn ceilings (orchestrator contracts.md "ACP node
       // timeouts"). The Dispatcher RENDERS these into the dispatch payload's
