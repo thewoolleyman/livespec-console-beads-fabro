@@ -375,11 +375,22 @@
       // counter-case -- a turn that finishes and then idles to the ceiling
       // on its own background pollers -- is orchestrator bd-ib-b5dg.1, and
       // is what bounds how far this ceiling should rise.
+      //
+      // `proof_capture` is 1 h, not the 30 min default: a TUI proof here
+      // drives the real console in tmux at two widths and waits out the
+      // 30 s writer-lease TTL between phases, so one fresh capture of a
+      // multi-assertion item needs about the whole default. Measured
+      // 2026-10-23 on run 01M5N3J02GQ1423GRX25HW0NPN
+      // (livespec-console-beads-fabro-rhh56m): both attempts worked the full
+      // 1800 s (120 and 75 tool calls), and the retry restarted from scratch
+      // and reached the fourth and last assertion only ~26 min in before the
+      // ceiling cut it. 3600 s is about 2x one full capture.
       "node_timeouts": {
         "implement": 14400,
         "janitor": 3600,
         "fix": 7200,
-        "review_fix": 7200
+        "review_fix": 7200,
+        "proof_capture": 3600
       },
 
       // TEMPORARY: park the `pr` node on the Claude adapter, off Codex.
