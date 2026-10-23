@@ -26,6 +26,11 @@ type TestResult = Result<(), String>;
 
 /// A scratch directory under the crate's own `target/`, unique per test
 /// process, so parallel test binaries never collide on the same repo.
+///
+/// Fine for every fixture that `git init`s a repository OF ITS OWN: git
+/// discovery stops at that repository, so whatever encloses `target/` cannot
+/// be reached. A fixture whose whole point is to be OUTSIDE every working
+/// tree needs [`make_non_git_scratch_dir`] instead -- see its docstring.
 fn make_scratch_dir(label: &str) -> Result<PathBuf, String> {
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp-repo-identity");
     let dir = base.join(format!("{label}-{}", std::process::id()));
@@ -33,6 +38,50 @@ fn make_scratch_dir(label: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("create scratch dir {}: {error}", dir.display()))?;
     Ok(dir)
+}
+
+/// A scratch directory OUTSIDE every git working tree, unique per test
+/// process. The same `std::env::temp_dir()` convention every other fixture in
+/// this workspace uses; [`make_scratch_dir`]'s `target/` root is the outlier.
+///
+/// Separate from [`make_scratch_dir`] because the separation IS
+/// `a_non_git_directory_still_falls_back_to_the_plain_basename`'s premise.
+/// `target/` sits inside this repository's own checkout, so a "non-git"
+/// fixture built there is in fact inside a working tree:
+/// `resolve_console_repo` then resolves it through the GIT-AWARE path to the
+/// enclosing clone's name and never reaches the fallback arm the test is
+/// named for. The assertion still passed, because the enclosing clone is
+/// normally `/data/projects/livespec-console-beads-fabro` and its name is the
+/// very string expected -- a coincidence of host layout, not evidence.
+///
+/// Measured 2026-10-23 in a factory sandbox, which clones to `/workspace`:
+/// the same test read `"workspace"` and failed, reddening `check-nextest` for
+/// a branch that had not touched `resolve_console_repo` at all. The defect was
+/// the fixture's, and it had been latent since the test was written -- the
+/// fallback it claims to cover had never once executed under it.
+fn make_non_git_scratch_dir(label: &str) -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir()
+        .join("livespec-console-repo-identity")
+        .join(format!("{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("create scratch dir {}: {error}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Whether git considers `dir` to be inside a working tree.
+///
+/// Asked of the SAME binary and the SAME plumbing command the production
+/// resolution runs (`console-cli`'s `git_repository_name`), so a fixture's
+/// asserted premise is the premise that code will actually observe, rather
+/// than a second opinion that could differ from it.
+fn is_inside_a_git_working_tree(dir: &Path) -> Result<bool, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(dir)
+        .output()
+        .map_err(|error| format!("failed to run git rev-parse in {}: {error}", dir.display()))?;
+    Ok(output.status.success())
 }
 
 fn git(dir: &Path, args: &[&str]) -> TestResult {
@@ -146,10 +195,25 @@ fn a_non_git_directory_still_falls_back_to_the_plain_basename() -> TestResult {
     // container with no `.git`). The git-aware resolution must degrade to the
     // pre-existing plain-basename behaviour rather than erroring or blanking
     // out the identity.
-    let root = make_scratch_dir("non-git-fallback")?;
+    let root = make_non_git_scratch_dir("non-git-fallback")?;
     let plain = root.join("livespec-console-beads-fabro");
     std::fs::create_dir_all(&plain)
         .map_err(|error| format!("create {}: {error}", plain.display()))?;
+
+    // Fixture sanity, and the one condition this test's NAME depends on: the
+    // fixture must really be outside every git working tree. Asserted rather
+    // than assumed, because the way it fails is SILENT -- a fixture that is
+    // inside some repository still resolves to a name, and when that
+    // repository happens to be named `livespec-console-beads-fabro` the
+    // assertion below passes with the fallback arm never executed. This turns
+    // that coincidence into a refusal that names its own cause.
+    assert!(
+        !is_inside_a_git_working_tree(&plain)?,
+        "fixture sanity: {} must be outside every git working tree, or the \
+         git-aware path answers and the plain-basename fallback below is \
+         never exercised",
+        plain.display()
+    );
 
     let resolved = resolve_console_repo(None, Some(&plain));
 
