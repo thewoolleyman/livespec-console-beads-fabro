@@ -494,6 +494,15 @@ fn run_interactive_store_tui(args: &[String]) -> Result<(), String> {
         factory_outcome_cell: factory_outcome_cell.clone(),
         source_event_counts: source_event_counts_cell.get(),
         source_event_counts_cell: source_event_counts_cell.clone(),
+        // The resolved adapter set, declared to the render path so the header's
+        // tally and the Event sources roster report only on the sources this
+        // build actually polls (livespec-console-beads-fabro-rhh56m). Read from
+        // the SAME adapter list the poll loop iterates, so a source cannot be
+        // declared under one name and observed under another.
+        current_source_names: livespec_console_beads_fabro::live_source_instance_names(
+            resolution.programs(),
+            journal_path.as_str(),
+        ),
         first_ingest_pending: Arc::clone(&first_ingest_pending),
         writer_lease_status_cell: writer_lease_status_cell.clone(),
     };
@@ -1485,6 +1494,11 @@ struct InteractiveTuiRunner {
     /// the first reads through here instead, same handoff as
     /// `source_last_success_cell` above.
     source_event_counts_cell: SharedSourceEventCounts,
+    /// The source INSTANCE names this build's resolved adapter set owns
+    /// (livespec-console-beads-fabro-rhh56m). No live cell: unlike its
+    /// neighbours this is fixed by the checkout's configuration at resolution
+    /// time, so re-probing it per cadence would re-publish the same list.
+    current_source_names: Vec<String>,
     /// The SAME handle the poller thread flips `false` once its first sweep
     /// completes (livespec-console-beads-fabro-pzbdbo.27).
     first_ingest_pending: Arc<AtomicBool>,
@@ -1523,6 +1537,7 @@ impl TuiSessionRunner for InteractiveTuiRunner {
             self.source_staleness.clone(),
             self.source_last_success.clone(),
             self.source_event_counts.clone(),
+            self.current_source_names.clone(),
             &mut live_session,
         )
         .map_err(ConsoleRuntimeError::tui_runtime_io_failed)
