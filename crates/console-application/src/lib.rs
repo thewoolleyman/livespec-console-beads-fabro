@@ -46,6 +46,9 @@ pub mod factory_outcome;
 /// Module containing source-adapters support.
 pub mod source_adapters;
 pub mod source_event_counts;
+/// The sources the RUNNING BUILD polls, and what the event log may be asked
+/// about them.
+pub mod source_registry;
 pub mod source_staleness;
 /// The identity of a marker's writer process.
 ///
@@ -63,6 +66,7 @@ use source_adapters::{
     work_item_snapshot_from_payload_json,
 };
 use source_event_counts::SourceEventCounts;
+use source_registry::restricted_to_current_sources;
 use source_staleness::{SourceStaleness, source_staleness_header_segment};
 use writer_identity::{WriterLeaseStatus, writer_lease_status_segment};
 
@@ -1483,6 +1487,12 @@ pub struct TuiInteractionState {
     // `source_last_success` uses. Absence of a source's key here reads as
     // "not yet counted", never as a fabricated zero.
     source_event_counts: BTreeMap<String, SourceEventCounts>,
+    // The source INSTANCE names the running build's resolved adapter set owns
+    // (livespec-console-beads-fabro-rhh56m). Empty by construction for every
+    // existing caller, which `source_registry::restricted_to_current_sources`
+    // reads as "not yet declared" and restricts nothing on -- see that module
+    // for why the event log alone cannot tell a DOWN source from a RETIRED one.
+    current_source_names: Vec<String>,
     // Whether the session's FIRST background source ingest is still in flight.
     // `false` by construction (every existing caller), so a session with no
     // opinion on the matter renders exactly as before. The composition root
@@ -1541,6 +1551,7 @@ impl TuiInteractionState {
             source_staleness: SourceStaleness::AllObserved,
             source_last_success: BTreeMap::new(),
             source_event_counts: BTreeMap::new(),
+            current_source_names: Vec::new(),
             startup_ingest_pending: false,
             writer_lease_status: WriterLeaseStatus::Writable,
             factory_outcome: None,
@@ -1588,6 +1599,7 @@ impl TuiInteractionState {
             source_staleness: SourceStaleness::AllObserved,
             source_last_success: BTreeMap::new(),
             source_event_counts: BTreeMap::new(),
+            current_source_names: Vec::new(),
             startup_ingest_pending: false,
             writer_lease_status: WriterLeaseStatus::Writable,
             factory_outcome: None,
@@ -1960,6 +1972,22 @@ impl TuiInteractionState {
     }
 
     #[must_use]
+    /// Return this value with the running build's resolved adapter set declared
+    /// (livespec-console-beads-fabro-rhh56m), as source INSTANCE names.
+    ///
+    /// DECLARED rather than derived, because the composition root is the only
+    /// place that knows which adapters it resolved -- see
+    /// [`source_registry`] for why the event log alone cannot tell a source
+    /// that is DOWN from one that is RETIRED. Unlike its neighbours above this
+    /// is seeded ONCE for the session rather than re-probed per cadence: the
+    /// adapter set is fixed by the checkout's configuration at resolution time,
+    /// so a live cell would re-publish the same list every sweep.
+    pub fn with_current_source_names(mut self, current_source_names: Vec<String>) -> Self {
+        self.current_source_names = current_source_names;
+        self
+    }
+
+    #[must_use]
     /// Return this value with whether the session's first background source
     /// ingest is still in flight replaced. The composition root re-checks this
     /// every tick (a cheap atomic read, never a store or CLI call) and folds the
@@ -2198,6 +2226,13 @@ impl TuiInteractionState {
     /// [`Self::with_source_event_counts`].
     pub const fn source_event_counts(&self) -> &BTreeMap<String, SourceEventCounts> {
         &self.source_event_counts
+    }
+
+    #[must_use]
+    /// Return the running build's declared adapter set. See
+    /// [`Self::with_current_source_names`]; empty means NOT YET DECLARED.
+    pub fn current_source_names(&self) -> &[String] {
+        &self.current_source_names
     }
 
     #[must_use]
@@ -5218,6 +5253,38 @@ pub fn project_tui_events(events: &[ConsoleEvent], search_query: Option<&str>) -
     }
 }
 
+/// The source-health view the header's tally and the Event sources roster BOTH
+/// read: the event log's per-source tally, restricted to the sources the
+/// running build actually polls (livespec-console-beads-fabro-rhh56m).
+///
+/// Derived ONCE per render, in [`render_tui_model`], and handed to every
+/// surface that reports source health. Two surfaces that each applied the
+/// restriction themselves could disagree about which sources are current --
+/// which is precisely the disagreement this item was filed for, where the
+/// header counted three and the store held two.
+struct CurrentSourceHealth {
+    /// The sources whose LATEST observation was not-observed.
+    unavailable: Vec<String>,
+    /// Every source the log holds any observation for, in tally order.
+    observed: Vec<String>,
+}
+
+impl CurrentSourceHealth {
+    /// Restrict one projection's source tally to a declared adapter set.
+    fn of(projection: &TuiProjection, current_source_names: &[String]) -> Self {
+        Self {
+            unavailable: restricted_to_current_sources(
+                &projection.unavailable_sources,
+                current_source_names,
+            ),
+            observed: restricted_to_current_sources(
+                &projection.observed_source_names,
+                current_source_names,
+            ),
+        }
+    }
+}
+
 /// The Event sources roster's rows and its own row cursor, for whichever
 /// surface `state` is on (livespec-console-beads-fabro-mx9u.20.3).
 ///
@@ -5235,7 +5302,7 @@ pub fn project_tui_events(events: &[ConsoleEvent], search_query: Option<&str>) -
 fn displayed_event_source_roster(
     active_view: TuiView,
     events_focus: EventsFocus,
-    projection: &TuiProjection,
+    health: &CurrentSourceHealth,
     events: &[ConsoleEvent],
     state: &TuiInteractionState,
 ) -> (Vec<EventSourceHealthRow>, Option<usize>) {
@@ -5244,8 +5311,8 @@ fn displayed_event_source_roster(
     }
     (
         event_source_health_rows(
-            &projection.observed_source_names,
-            &projection.unavailable_sources,
+            &health.observed,
+            &health.unavailable,
             events,
             state.source_last_success(),
             state.source_event_counts(),
@@ -5275,6 +5342,9 @@ pub fn render_tui_model(
         projection.factory_activity.as_deref(),
         state.factory_outcome(),
     );
+    // The source-health view every surface below reports from, restricted ONCE
+    // to the sources the running build polls (livespec-console-beads-fabro-rhh56m).
+    let health = CurrentSourceHealth::of(projection, state.current_source_names());
     let (attention_items, selected_attention_index, displaced_attention_id, detail) =
         displayed_attention(projection, events, state);
     let overlay = normalize_overlay(state.overlay(), detail.as_ref());
@@ -5304,7 +5374,7 @@ pub fn render_tui_model(
         .selected_events_index()
         .min(EventsFocus::all().len() - 1);
     let (event_source_rows, selected_event_source_index) =
-        displayed_event_source_roster(active_view, events_focus, projection, events, state);
+        displayed_event_source_roster(active_view, events_focus, &health, events, state);
     // The Status line is ONE channel, and its rule is that the most recent thing
     // to contradict the operator's expectation is what it says. A cursor that
     // moved out from under them because the anchored row left the list is
@@ -5355,13 +5425,14 @@ pub fn render_tui_model(
         // the header pane's block title instead; see `fit_header_line`'s doc.
         header: canonical_header(
             projection,
+            &health,
             state,
             active_view,
             tell.as_deref(),
             transient_status.as_deref(),
         ),
-        unavailable_sources: projection.unavailable_sources.clone(),
-        observed_source_names: projection.observed_source_names.clone(),
+        unavailable_sources: health.unavailable,
+        observed_source_names: health.observed,
         factory_activity: tell,
         transient_status,
         list_edge: state.list_edge(),
@@ -5671,6 +5742,7 @@ fn startup_ingest_header_segment(startup_ingest_pending: bool) -> String {
 /// is written down.
 fn canonical_header(
     projection: &TuiProjection,
+    health: &CurrentSourceHealth,
     state: &TuiInteractionState,
     active_view: TuiView,
     factory_tell: Option<&str>,
@@ -5684,7 +5756,7 @@ fn canonical_header(
         factory_activity_segment(factory_tell),
         transient_status_segment(transient_status),
         build_staleness_header_segment(state.build_staleness()),
-        source_health_header_segment(&projection.unavailable_sources),
+        source_health_header_segment(&health.unavailable),
         source_staleness_header_wide_segment(state.source_staleness()),
         writer_lease_status_header_segment(state.writer_lease_status()),
         startup_ingest_header_segment(state.startup_ingest_pending())
@@ -15959,6 +16031,66 @@ mod tests {
         assert_eq!(
             model.view_items()[0].detail(),
             "event counts: 4 observed, 1 not-observed (20% not-observed)"
+        );
+    }
+
+    #[test]
+    fn the_declared_adapter_set_restricts_both_the_header_tally_and_the_roster() {
+        // livespec-console-beads-fabro-rhh56m AC3/AC5: the measured 2026-09-12
+        // store, where a RETIRED `fabro` row still sat newest-not-observed in
+        // the log while the running build polled only `fabro:hp` and
+        // `fabro:vps`. The header counted three; the store held two. The
+        // declaration is fed via `with_current_source_names` exactly as the
+        // composition root feeds it, and ONE restricted view reaches both
+        // surfaces, so they cannot disagree.
+        let events = [
+            ConsoleEvent::fixture(
+                "evt_fabro_retired",
+                EventType::SourceNotObservedFindingObserved,
+                "fabro",
+            ),
+            ConsoleEvent::fixture(
+                "evt_fabro_hp_observed",
+                EventType::SourceObservedFindingObserved,
+                "fabro:hp",
+            ),
+            ConsoleEvent::fixture(
+                "evt_fabro_vps_not_observed",
+                EventType::SourceNotObservedFindingObserved,
+                "fabro:vps",
+            ),
+        ];
+        let state = TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+            .with_events_focus(EventsFocus::EventSources)
+            .with_current_source_names(vec!["fabro:hp".to_owned(), "fabro:vps".to_owned()]);
+
+        let model = build_tui_model_for_state(&events, &state);
+
+        assert_eq!(model.unavailable_sources(), ["fabro:vps".to_owned()]);
+        assert_eq!(
+            model.observed_source_names(),
+            ["fabro:hp".to_owned(), "fabro:vps".to_owned()]
+        );
+        assert_eq!(model.view_items()[0].title(), "fabro:hp — healthy");
+        assert_eq!(
+            model.view_items()[1].title(),
+            "fabro:vps — unavailable [enter re-poll]"
+        );
+        assert_eq!(model.view_items().len(), 2);
+        // The same log with NO declaration reports the retired row too, which
+        // is what the restriction is removing rather than something it invents.
+        let undeclared = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Events, 0, TuiOverlay::None)
+                .with_events_focus(EventsFocus::EventSources),
+        );
+        assert_eq!(
+            undeclared.unavailable_sources(),
+            ["fabro".to_owned(), "fabro:vps".to_owned()]
+        );
+        assert_eq!(
+            state.current_source_names(),
+            ["fabro:hp".to_owned(), "fabro:vps".to_owned()]
         );
     }
 

@@ -1973,6 +1973,34 @@ fn fabro_source_specs(programs: &BackingCliPrograms) -> Vec<SourceAdapterSpec> {
         .collect()
 }
 
+/// The source INSTANCE names this build's adapter set owns, in resolution
+/// order (livespec-console-beads-fabro-rhh56m).
+///
+/// The composition root's declaration of which sources the running build
+/// actually polls, which the TUI's source-health view is restricted to -- see
+/// `console_application::source_registry` for why the event log alone cannot
+/// tell a source that is DOWN from one that is RETIRED.
+///
+/// Read off the SAME spec list [`live_source_adapters_with_programs`] builds
+/// its adapters from, not a second hand-written list: a declared set that could
+/// drift from the polled set would re-introduce this very defect from the other
+/// end, hiding a source that IS polled.
+///
+/// Needs no probe and performs no I/O, which is why the interactive path can
+/// declare the set without resolving adapters it does not otherwise need
+/// (livespec-console-beads-fabro-pzbdbo.27 moved that resolution off the
+/// first-frame path deliberately).
+#[must_use]
+pub fn live_source_instance_names(
+    programs: &BackingCliPrograms,
+    journal_path: &str,
+) -> Vec<String> {
+    live_source_adapter_specs(programs, journal_path)
+        .into_iter()
+        .map(|(instance_name, _kind, _instance, _plan, _normalize)| instance_name)
+        .collect()
+}
+
 /// Build real source adapters with an explicit backing CLI resolution.
 ///
 /// `journal_path` is the ABSOLUTE Dispatcher journal path
@@ -1985,6 +2013,28 @@ pub fn live_source_adapters_with_programs<'a>(
     programs: &BackingCliPrograms,
     journal_path: &str,
 ) -> ConsoleRuntimeResult<Vec<(String, ObservedSourceAdapter<'a>)>> {
+    live_source_adapter_specs(programs, journal_path)
+        .into_iter()
+        .map(|(prefix, source, instance, plan, normalize)| {
+            let adapter = ObservedSourceAdapter::new(probe, source, repo, plan, normalize)?;
+            let adapter = match instance {
+                Some(instance) => adapter.at_instance(&instance),
+                None => adapter,
+            };
+            Ok((format!("{prefix}:{repo}"), adapter))
+        })
+        .collect()
+}
+
+/// Every live source's spec, in the order the poll loop sweeps them.
+///
+/// The ONE list both [`live_source_adapters_with_programs`] and
+/// [`live_source_instance_names`] read, so what the console polls and what it
+/// declares it polls cannot disagree.
+fn live_source_adapter_specs(
+    programs: &BackingCliPrograms,
+    journal_path: &str,
+) -> Vec<SourceAdapterSpec> {
     let livespec_args = programs
         .livespec()
         .args()
@@ -2046,16 +2096,6 @@ pub fn live_source_adapters_with_programs<'a>(
         ),
     ]);
     specs
-        .into_iter()
-        .map(|(prefix, source, instance, plan, normalize)| {
-            let adapter = ObservedSourceAdapter::new(probe, source, repo, plan, normalize)?;
-            let adapter = match instance {
-                Some(instance) => adapter.at_instance(&instance),
-                None => adapter,
-            };
-            Ok((format!("{prefix}:{repo}"), adapter))
-        })
-        .collect()
 }
 
 /// Derive the observed tenant repo the cockpit is watching.
@@ -2517,9 +2557,19 @@ impl DoctorRunResult {
 /// are in reach -- each checkpoint row is read, filtered down to the ones
 /// [`checkpoint_reflects_a_successful_poll`] affirms as an actual successful
 /// poll (never one recording an honest not-observed finding at the same
-/// cadence), and its `adapter_id` (`"{source}:{repo}"`, the convention
-/// `refresh_sources` mints adapter ids under, above) is reduced to the bare
-/// source name `doctor`'s findings key on.
+/// cadence), and its `adapter_id` is reduced through
+/// [`adapter_id_source_name`] to the ENVELOPE SOURCE NAME every observation
+/// that adapter emits is attributed to.
+///
+/// Through that ONE reduction, never a second account of the id shape. This
+/// read used to split on the FIRST colon -- correct for the pre-z4y7kp
+/// `<source>:<repo>` ids, and wrong the moment z4y7kp made them
+/// `<source>:<factory>:<repo>`: `fabro:hp:<repo>` and `fabro:vps:<repo>` both
+/// collapsed onto the bare family name `fabro`. Measured 2026-09-12 on the
+/// real store, that credited hp's successful poll to a RETIRED `fabro` row
+/// whose roster line then advertised a timestamp belonging to a different
+/// source, and left both per-factory sources with no checkpoint-derived
+/// last-success of their own (livespec-console-beads-fabro-rhh56m).
 ///
 /// `pub` (not private): livespec-console-beads-fabro-mx9u.17's
 /// [`source_staleness_snapshot`] needs this same read, off the background
@@ -2529,21 +2579,27 @@ impl DoctorRunResult {
 pub fn checkpoint_source_last_success(
     store: &SqliteEventStore,
 ) -> EventStoreResult<Vec<(String, String)>> {
-    Ok(store
+    let mut last_success = store
         .list_checkpoints()?
         .into_iter()
         .filter_map(|(adapter_id, checkpoint_json, advanced_at)| {
             if !checkpoint_reflects_a_successful_poll(&checkpoint_json) {
                 return None;
             }
-            let source = adapter_id
-                .split(':')
-                .next()
-                .unwrap_or(&adapter_id)
-                .to_owned();
+            let source = adapter_id_source_name(&adapter_id).to_owned();
             Some((source, advanced_at))
         })
-        .collect())
+        .collect::<Vec<_>>();
+    // Ordered by the SOURCE NAME this read is keyed on, not by the adapter-id
+    // encoding it happened to arrive under. The two disagree: `fabro:hp:<repo>`
+    // sorts before `fabro:<repo>` as an id while `fabro` sorts before
+    // `fabro:hp` as a source, so a caller reading this list positionally would
+    // see an order that moves whenever a factory is added or renamed. The
+    // production consumer ([`last_successful_observed_at`]) folds this into a
+    // map and keeps the LATEST timestamp per source explicitly, so it is
+    // order-insensitive either way -- this makes the list say so.
+    last_success.sort();
+    Ok(last_success)
 }
 
 /// The three facts [`source_health_and_last_success`] reads together: the
@@ -4445,14 +4501,14 @@ mod tests {
         initial_source_seed, is_failed_once_only_valve_retry, lane_command_failure_line,
         lane_diagnostics_path, lane_failures_in, lane_open_failure_line, lane_startup_failure_line,
         live_source_adapters, live_source_adapters_from_resolution,
-        live_source_adapters_with_programs, load_tui_events_from_store, normalized_payload_json,
-        observe_and_reflect_autonomous_decisions, older_factory_command_blocks_control_command,
-        parse_factory_servers, persist_tui_runtime_effects, plan_page_report,
-        python_normalized_invocation, refresh_sources, render_tui_preview,
-        repo_name_from_git_common_dir_output, resolve_console_repo, run, run_command_lane,
-        run_store_backed_tui_session, run_with_store, serve_report, serve_report_after_ingest,
-        serve_report_with_dispatch_port, snapshot_report, source_polls_from_seed,
-        tolerate_shutdown_contention, tolerate_startup_contention,
+        live_source_adapters_with_programs, live_source_instance_names, load_tui_events_from_store,
+        normalized_payload_json, observe_and_reflect_autonomous_decisions,
+        older_factory_command_blocks_control_command, parse_factory_servers,
+        persist_tui_runtime_effects, plan_page_report, python_normalized_invocation,
+        refresh_sources, render_tui_preview, repo_name_from_git_common_dir_output,
+        resolve_console_repo, run, run_command_lane, run_store_backed_tui_session, run_with_store,
+        serve_report, serve_report_after_ingest, serve_report_with_dispatch_port, snapshot_report,
+        source_polls_from_seed, tolerate_shutdown_contention, tolerate_startup_contention,
         tui_session_outcome_from_final_events, work_item_command_from_stored,
     };
 
@@ -6432,6 +6488,31 @@ mod tests {
             .iter()
             .find(|item| item.title().starts_with(&format!("{source} \u{2014} ")))
             .map(|item| format!("{}\n{}", item.title(), item.detail()))
+    }
+
+    /// The DECLARED adapter set is read off the SAME spec list the adapters are
+    /// built from, so the console cannot declare one set of sources and poll
+    /// another -- which would re-introduce livespec-console-beads-fabro-rhh56m
+    /// from the other end, hiding a source that IS polled.
+    #[test]
+    fn the_declared_source_set_names_exactly_the_adapters_actually_built() {
+        let probe = SequencedFailingProbe::new(&["down"]);
+        let programs = BackingCliPrograms::default();
+        let built = live_adapters_over(&probe, &programs)
+            .iter()
+            .map(|(adapter_id, _adapter)| adapter_id_source_name(adapter_id).to_owned())
+            .collect::<Vec<_>>();
+
+        check(
+            live_source_instance_names(&programs, "/nonexistent/journal") == built,
+            "the declared set and the built adapter set must name the same sources",
+        );
+        // Non-vacuous: a derivation that returned an empty list would also
+        // satisfy an equality against an empty one.
+        check(
+            built.contains(&"reconcile-runs".to_owned()),
+            "the reconciler is one of the sources this build polls",
+        );
     }
 
     #[test]

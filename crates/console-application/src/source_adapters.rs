@@ -2321,6 +2321,7 @@ pub struct ParsedObservation {
     checkpoint: String,
     events: Vec<NormalizedSourceEvent>,
     idle: bool,
+    partial: bool,
 }
 
 impl ParsedObservation {
@@ -2331,7 +2332,45 @@ impl ParsedObservation {
             checkpoint: checkpoint.to_owned(),
             events,
             idle: false,
+            partial: false,
         }
+    }
+
+    #[must_use]
+    /// The normalizer's OBSERVED-BUT-PARTIAL verdict: the payload was read and
+    /// understood, it reports the legs of a MULTI-LEG survey that answered, and
+    /// it NAMES the legs that did not.
+    ///
+    /// The one verdict that survives a FAILED command exit. The adapter's
+    /// honesty rule brands a non-zero exit not-observed, which is right for a
+    /// source with one leg -- nothing was reached -- and wrong for a source that
+    /// probes several endpoints in one invocation and exits non-zero because ONE
+    /// of them refused. Measured 2026-09-12: with two factories configured and
+    /// one a deliberately-down standby, `reconcile-runs` collected the live
+    /// factory's runs and still read unavailable, so the console lost
+    /// reconciliation visibility permanently over a factory nobody routes work
+    /// to (livespec-console-beads-fabro-rhh56m defect 1).
+    ///
+    /// Only the source-specific normalizer can tell a partially-reached survey
+    /// from a payload that proves nothing, so it says so HERE rather than the
+    /// adapter guessing from an exit status it cannot interpret. The verdict is
+    /// OPT-IN for exactly that reason: every other normalizer keeps the strict
+    /// rule untouched, and a source that wants this must declare the legs it
+    /// could not reach, which is what makes the partial observation legible
+    /// rather than a silently-shrunken one.
+    pub fn observed_partial(checkpoint: &str, events: Vec<NormalizedSourceEvent>) -> Self {
+        Self {
+            checkpoint: checkpoint.to_owned(),
+            events,
+            idle: false,
+            partial: true,
+        }
+    }
+
+    #[must_use]
+    /// Whether this is the normalizer's observed-but-partial verdict.
+    pub const fn is_partial(&self) -> bool {
+        self.partial
     }
 
     #[must_use]
@@ -2351,6 +2390,7 @@ impl ParsedObservation {
             checkpoint: OBSERVED_IDLE_CHECKPOINT.to_owned(),
             events: Vec::new(),
             idle: true,
+            partial: false,
         }
     }
 
@@ -2509,73 +2549,12 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                 if is_idle_payload(&stdout) {
                     return Ok(self.idle_poll(previous));
                 }
-                // The previous SOURCE checkpoint (unwrapped from the
-                // availability envelope) is the adapter's memory of what it last
-                // observed. A normalizer that must tell a genuine state change
-                // from a re-observation of the state it already reported reads
-                // it; the rest observe it and ignore it.
-                let observed = ObservedSource::new(self.source.kind(), &self.repo, &stdout)
-                    .with_previous_checkpoint(
-                        AvailabilityCheckpoint::from_previous(previous).0.as_deref(),
-                    );
-                match (self.normalize)(&observed) {
+                match self.normalized(previous, &stdout) {
                     // A normalizer that read its payload and found nothing to
                     // report is observed-and-idle on the same terms as the
                     // envelope-level gate above -- it reached the source.
                     Ok(parsed) if parsed.is_idle() => Ok(self.idle_poll(previous)),
-                    Ok(parsed) if !parsed.events.is_empty() => {
-                        // A data-bearing observation's events are
-                        // content-addressed: when the recovered read reports
-                        // exactly the state the store already holds, they
-                        // dedupe away as duplicates and NOTHING lands. If the
-                        // source was previously branded unavailable, that
-                        // silent dedup would leave it branded forever --
-                        // violating this adapter's own contract that a
-                        // transient failure is never permanent. So every
-                        // data-bearing Observed poll ALSO emits the same
-                        // positive marker the idle path already emits on
-                        // EVERY idle poll (`idle_poll`, above) --
-                        // unconditionally, not gated on this adapter's own
-                        // locally-cached belief that a not-observed ->
-                        // observed transition just happened.
-                        //
-                        // That gate used to read the PREVIOUS checkpoint's own
-                        // `availability` field, which is only this adapter's
-                        // local memory of its own past transitions -- and
-                        // memory that can already be wrong: a checkpoint
-                        // written before this marker even existed, or written
-                        // by a prior poll that itself hit this same bug, both
-                        // read `observed` while the durable event log's
-                        // newest entry for this source is still a stale
-                        // not-observed finding. On such a checkpoint the gate
-                        // never fires again, because the local memory never
-                        // disagrees with itself -- exactly the measured
-                        // livespec-console-beads-fabro-mx9u.24 defect: a
-                        // source branded unavailable stayed branded forever
-                        // once its checkpoint drifted out of sync with the
-                        // stale marker still sitting newest in the log.
-                        //
-                        // The marker's id is content-addressed on the
-                        // transition epoch (`source_observed_event`), so
-                        // unconditional emission is free once healthy: the
-                        // first poll after any drift lands the missing marker
-                        // (a fresh id, since it was never actually inserted),
-                        // and every later poll re-emits the identical id,
-                        // which the store dedupes to a no-op -- the same
-                        // idempotence `idle_poll` already relies on.
-                        let (checkpoint, transition_epoch) = availability_transition(
-                            previous,
-                            AvailabilityState::Observed,
-                            &parsed.checkpoint,
-                        );
-                        let mut events = self.attributed_to_instance(parsed.events);
-                        events.push(source_observed_event(
-                            &self.source,
-                            &self.repo,
-                            transition_epoch,
-                        ));
-                        AdapterPoll::new(&checkpoint, events)
-                    }
+                    Ok(parsed) if !parsed.events.is_empty() => self.observed_poll(previous, parsed),
                     Ok(_empty) => {
                         Ok(self.not_observed_poll(previous, "source produced no records"))
                     }
@@ -2583,9 +2562,9 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                 }
             }
             SourceProbeOutcome::Observed {
+                stdout,
                 success: false,
                 diagnostic,
-                ..
             } => {
                 // A failed command with no diagnostic is a fixture built with
                 // `SourceProbeOutcome::observed(_, false)` (every existing
@@ -2597,12 +2576,103 @@ impl PullSourcePort for ObservedSourceAdapter<'_> {
                 // (livespec-console-beads-fabro-pzbdbo.29 AC3).
                 let reason =
                     diagnostic.unwrap_or_else(|| "source command exited non-zero".to_owned());
-                Ok(self.not_observed_poll(previous, &reason))
+                // A non-zero exit is genuine unreachability for a source with
+                // ONE leg, and the strict rule stands for every such source.
+                // A MULTI-LEG survey is the one exception the normalizer may
+                // declare: when it reads the failed command's own payload,
+                // reports the legs that answered and NAMES the legs that did
+                // not, the console observed what it says it observed
+                // ([`ParsedObservation::observed_partial`]). Nothing else is
+                // salvaged -- an unreadable payload, an idle verdict, or a
+                // plain data-bearing parse all keep the not-observed finding
+                // and its verbatim diagnostic, because none of them says which
+                // part of the source was reached.
+                match self.normalized(previous, &stdout) {
+                    Ok(parsed) if parsed.is_partial() => self.observed_poll(previous, parsed),
+                    _unobserved => Ok(self.not_observed_poll(previous, &reason)),
+                }
             }
             SourceProbeOutcome::Unavailable { reason } => {
                 Ok(self.not_observed_poll(previous, &reason))
             }
         }
+    }
+}
+
+impl ObservedSourceAdapter<'_> {
+    /// Run this adapter's source-specific normalizer over one observed payload.
+    ///
+    /// The previous SOURCE checkpoint (unwrapped from the availability
+    /// envelope) is the adapter's memory of what it last observed. A normalizer
+    /// that must tell a genuine state change from a re-observation of the state
+    /// it already reported reads it; the rest observe it and ignore it.
+    ///
+    /// Shared by the successful and the FAILED-exit arms of [`Self::poll`], so a
+    /// partially-reached survey is interpreted by exactly the same normalizer,
+    /// over exactly the same payload, as a clean one.
+    fn normalized(
+        &self,
+        previous_checkpoint: Option<&str>,
+        stdout: &str,
+    ) -> Result<ParsedObservation, String> {
+        let observed = ObservedSource::new(self.source.kind(), &self.repo, stdout)
+            .with_previous_checkpoint(
+                AvailabilityCheckpoint::from_previous(previous_checkpoint)
+                    .0
+                    .as_deref(),
+            );
+        (self.normalize)(&observed)
+    }
+
+    /// A data-bearing OBSERVED poll: the normalizer's events, plus the positive
+    /// availability marker that clears the header's unavailability tally.
+    fn observed_poll(
+        &self,
+        previous_checkpoint: Option<&str>,
+        parsed: ParsedObservation,
+    ) -> AdapterResult<AdapterPoll> {
+        // A data-bearing observation's events are content-addressed: when the
+        // recovered read reports exactly the state the store already holds,
+        // they dedupe away as duplicates and NOTHING lands. If the source was
+        // previously branded unavailable, that silent dedup would leave it
+        // branded forever -- violating this adapter's own contract that a
+        // transient failure is never permanent. So every data-bearing Observed
+        // poll ALSO emits the same positive marker the idle path already emits
+        // on EVERY idle poll (`idle_poll`, above) -- unconditionally, not gated
+        // on this adapter's own locally-cached belief that a not-observed ->
+        // observed transition just happened.
+        //
+        // That gate used to read the PREVIOUS checkpoint's own `availability`
+        // field, which is only this adapter's local memory of its own past
+        // transitions -- and memory that can already be wrong: a checkpoint
+        // written before this marker even existed, or written by a prior poll
+        // that itself hit this same bug, both read `observed` while the durable
+        // event log's newest entry for this source is still a stale
+        // not-observed finding. On such a checkpoint the gate never fires
+        // again, because the local memory never disagrees with itself --
+        // exactly the measured livespec-console-beads-fabro-mx9u.24 defect: a
+        // source branded unavailable stayed branded forever once its
+        // checkpoint drifted out of sync with the stale marker still sitting
+        // newest in the log.
+        //
+        // The marker's id is content-addressed on the transition epoch
+        // (`source_observed_event`), so unconditional emission is free once
+        // healthy: the first poll after any drift lands the missing marker (a
+        // fresh id, since it was never actually inserted), and every later poll
+        // re-emits the identical id, which the store dedupes to a no-op -- the
+        // same idempotence `idle_poll` already relies on.
+        let (checkpoint, transition_epoch) = availability_transition(
+            previous_checkpoint,
+            AvailabilityState::Observed,
+            &parsed.checkpoint,
+        );
+        let mut events = self.attributed_to_instance(parsed.events);
+        events.push(source_observed_event(
+            &self.source,
+            &self.repo,
+            transition_epoch,
+        ));
+        AdapterPoll::new(&checkpoint, events)
     }
 }
 
@@ -3559,14 +3629,79 @@ impl ReconcileRunsSnapshot {
     }
 
     #[must_use]
-    /// A human-readable reason per record the parse could NOT read.
+    /// A human-readable reason per record the parse could NOT read, and per
+    /// surveyed factory the RECONCILER itself could not reach.
     ///
     /// Surfaced rather than dropped, for the same reason the needs-attention
     /// adapter surfaces its skips: a silently-shrunken lane is indistinguishable
     /// from a clean one, and this lane's whole job is to make an invisible held
-    /// slot visible.
+    /// slot visible. An unreached factory is the same omission one level up --
+    /// its slots are absent from this projection, and nothing else in it says
+    /// so -- which is why it is named here rather than left to the reader to
+    /// notice (livespec-console-beads-fabro-rhh56m AC1).
     pub fn skipped(&self) -> &[String] {
         &self.skipped
+    }
+}
+
+/// One reconcile-runs envelope, read: the projection the lane renders, plus how
+/// many of the factories it SURVEYED the reconciler could not reach.
+///
+/// The count rides beside the snapshot rather than inside it because it decides
+/// an AVAILABILITY question, not a presentation one: a survey that reached some
+/// legs is an observation the console genuinely made
+/// ([`ParsedObservation::observed_partial`]), and one that reached none is not.
+/// The unreached factories are ALSO named in the snapshot's own surfaced
+/// reasons, which is the presentation half.
+struct ParsedReconcileRuns {
+    snapshot: ReconcileRunsSnapshot,
+    unreached_factories: usize,
+}
+
+/// Name every surveyed factory the reconciler's own envelope reports as
+/// unreachable, in envelope order.
+///
+/// Read from the orchestrator's OWN structured `errors[]` -- its words, its
+/// factory names, its reason vocabulary -- rather than re-derived from an exit
+/// status the console cannot interpret. An entry naming no factory is still
+/// surfaced: a leg that failed anonymously is a leg that failed, and dropping
+/// it would under-report the survey.
+fn reconcile_runs_unreached_factories(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<String> {
+    object
+        .get("errors")
+        .and_then(serde_json::Value::as_array)
+        .map(|errors| errors.iter().map(reconcile_runs_survey_failure).collect())
+        .unwrap_or_default()
+}
+
+/// One `errors[]` entry, as the line the lane surfaces.
+fn reconcile_runs_survey_failure(entry: &serde_json::Value) -> String {
+    let field = |name: &str| {
+        entry
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let factory = field("factory_name");
+    let factory = if factory.is_empty() {
+        "an unnamed factory".to_owned()
+    } else {
+        format!("factory {factory}")
+    };
+    let reason = field("reason");
+    let reason = if reason.is_empty() {
+        "no reason reported".to_owned()
+    } else {
+        reason
+    };
+    let detail = field("detail");
+    if detail.is_empty() {
+        format!("surveyed {factory} could not be reached: {reason}")
+    } else {
+        format!("surveyed {factory} could not be reached: {reason}: {detail}")
     }
 }
 
@@ -3588,13 +3723,22 @@ impl ReconcileRunsSnapshot {
 ///   tell the operator every factory is clean when none was reached.
 ///
 /// Past those, tolerance is PER RECORD: an unreadable entry is skipped with a
-/// reason and the rest of the envelope is still consumed.
+/// reason and the rest of the envelope is still consumed. It is also PER
+/// SURVEY LEG: a factory the reconciler could not reach is named in the
+/// snapshot's surfaced reasons and the legs that answered are still consumed --
+/// unless EVERY surveyed factory failed, which is the third refusal below.
 ///
 /// # Errors
 /// Returns a reason string when the output is not the reconciler's dry-run
-/// envelope, when it reports a wired (non-dry) pass, or when it surveyed no
-/// factory.
+/// envelope, when it reports a wired (non-dry) pass, when it surveyed no
+/// factory, or when it reached none of the factories it surveyed.
 pub fn parse_reconcile_runs_snapshot(stdout: &str) -> Result<ReconcileRunsSnapshot, String> {
+    parse_reconcile_runs_envelope(stdout).map(|parsed| parsed.snapshot)
+}
+
+/// [`parse_reconcile_runs_snapshot`]'s whole read, keeping the unreached-leg
+/// count its availability verdict needs.
+fn parse_reconcile_runs_envelope(stdout: &str) -> Result<ParsedReconcileRuns, String> {
     let envelope: serde_json::Value = serde_json::from_str(stdout)
         .map_err(|_error| "reconcile-runs output is not a JSON object".to_owned())?;
     let Some(object) = envelope.as_object() else {
@@ -3607,17 +3751,28 @@ pub fn parse_reconcile_runs_snapshot(stdout: &str) -> Result<ReconcileRunsSnapsh
                 .to_owned(),
         );
     }
-    if object
+    let surveyed = object
         .get("factories_surveyed")
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or_default()
-        == 0
-    {
+        .unwrap_or_default();
+    if surveyed == 0 {
         return Err(
             "reconcile-runs surveyed no factory, so it observed nothing; an empty orphan set \
              here would report every factory clean rather than unreached"
                 .to_owned(),
         );
+    }
+    let unreached = reconcile_runs_unreached_factories(object);
+    // The TOTAL-outage refusal. A survey that reached some of its legs is a
+    // genuine partial observation; one that reached none observed nothing at
+    // all, and rendering its empty orphan set would be the same
+    // every-factory-clean lie the zero-survey refusal above exists to stop.
+    if unreached.len() as u64 >= surveyed {
+        return Err(format!(
+            "reconcile-runs reached none of the {surveyed} factories it surveyed, so it \
+             observed nothing: {}",
+            unreached.join("; ")
+        ));
     }
     let Some(reconciled) = object
         .get("reconciled")
@@ -3627,7 +3782,10 @@ pub fn parse_reconcile_runs_snapshot(stdout: &str) -> Result<ReconcileRunsSnapsh
     };
 
     let mut orphaned_runs = Vec::new();
-    let mut skipped = Vec::new();
+    // The unreached legs lead: an operator reading this projection needs to know
+    // what it does not cover before reading what it does.
+    let mut skipped = unreached;
+    let unreached_factories = skipped.len();
     for (index, value) in reconciled.iter().enumerate() {
         match serde_json::from_value::<OrphanedFactoryRun>(value.clone()) {
             Ok(run) => orphaned_runs.push(run),
@@ -3636,7 +3794,10 @@ pub fn parse_reconcile_runs_snapshot(stdout: &str) -> Result<ReconcileRunsSnapsh
             )),
         }
     }
-    Ok(ReconcileRunsSnapshot::new(orphaned_runs, skipped))
+    Ok(ParsedReconcileRuns {
+        snapshot: ReconcileRunsSnapshot::new(orphaned_runs, skipped),
+        unreached_factories,
+    })
 }
 
 /// The event stream one repo's reconciler projection is written to.
@@ -3715,14 +3876,23 @@ pub fn reconcile_runs_snapshot_from_payload_json(
 /// `source_event_id`, so the store's idempotency dedupes it away instead of
 /// growing one row per cadence tick.
 ///
+/// A survey that reached SOME of its factories reports
+/// [`ParsedObservation::observed_partial`], which is what lets the lane keep
+/// the live factory's runs through the non-zero exit a down standby causes
+/// (livespec-console-beads-fabro-rhh56m AC1). A survey that reached all of them
+/// reports the ordinary observation, and one that reached none is the `Err`
+/// below.
+///
 /// # Errors
 /// Returns a reason string when the output is not the reconciler's dry-run
-/// envelope; the adapter records that as an honest not-observed finding rather
-/// than an empty orphan set, which would read as "every factory is clean".
+/// envelope, or when it reached none of the factories it surveyed; the adapter
+/// records that as an honest not-observed finding rather than an empty orphan
+/// set, which would read as "every factory is clean".
 pub fn parse_reconcile_runs_observation(
     observed: &ObservedSource,
 ) -> Result<ParsedObservation, String> {
-    let snapshot = parse_reconcile_runs_snapshot(observed.stdout())?;
+    let parsed = parse_reconcile_runs_envelope(observed.stdout())?;
+    let snapshot = parsed.snapshot;
     let payload_json = reconcile_runs_snapshot_payload_json(&snapshot);
     let version = source_stream_seq(&[observed.repo(), &payload_json]);
     let source_event_id = format!("reconcile-runs:{}:{version}", observed.repo());
@@ -3739,7 +3909,13 @@ pub fn parse_reconcile_runs_observation(
         source_event_id,
         SourcePayload::ReconcileRunsSnapshot(snapshot),
     );
-    Ok(ParsedObservation::new(&version.to_string(), vec![event]))
+    if parsed.unreached_factories == 0 {
+        return Ok(ParsedObservation::new(&version.to_string(), vec![event]));
+    }
+    Ok(ParsedObservation::observed_partial(
+        &version.to_string(),
+        vec![event],
+    ))
 }
 
 /// Normalize real `livespec next` output into a `LivespecNextSnapshot`.
@@ -8460,6 +8636,208 @@ mod tests {
             parse_reconcile_runs_observation(&observed)
                 .is_err_and(|reason| reason.contains("is not a --dry-run projection")),
             "a wired pass must be refused at the adapter boundary",
+        );
+    }
+
+    /// The measured envelope of livespec-console-beads-fabro-rhh56m defect 1:
+    /// two factories surveyed, one of them a deliberately-down standby whose
+    /// leg failed, and the live factory's orphan collected in the SAME
+    /// invocation.
+    const RECONCILE_RUNS_ONE_LEG_DOWN: &str = r#"{
+        "dry_run": true,
+        "factories_surveyed": 2,
+        "reconciled": [
+            {
+                "run_id": "01M1ES066RHS8Y39B9WJW8WC8Q",
+                "factory_name": "hp",
+                "status_kind": "running",
+                "work_item_id": "livespec-console-beads-fabro-h7jp",
+                "work_item_status": "blocked",
+                "orphan_reason": "item-not-active",
+                "termination_route": "none"
+            }
+        ],
+        "errors": [
+            {
+                "factory_name": "vps",
+                "factory_server_url": "https://vps.perch-rudd.ts.net:32276",
+                "reason": "factory-ps-failed",
+                "detail": "fabro ps exited 1"
+            }
+        ]
+    }"#;
+
+    /// AC1: a survey leg the reconciler could not reach is NAMED in the
+    /// snapshot's surfaced reasons, ahead of the per-record skips, and the legs
+    /// that DID answer still carry their runs. A lane that silently dropped the
+    /// unreached factory would read as a complete survey of every factory.
+    #[test]
+    fn an_unreached_survey_leg_is_named_beside_the_runs_the_survey_did_collect() {
+        let snapshot =
+            ok_reconcile_snapshot(parse_reconcile_runs_snapshot(RECONCILE_RUNS_ONE_LEG_DOWN));
+
+        assert_eq!(snapshot.orphaned_runs().len(), 1);
+        assert_eq!(
+            snapshot.skipped(),
+            [
+                "surveyed factory vps could not be reached: factory-ps-failed: \
+                 fabro ps exited 1"
+                    .to_owned()
+            ]
+        );
+    }
+
+    /// The `errors[]` entry is read field by field, and every field the
+    /// orchestrator may omit degrades to words rather than to a blank: an
+    /// anonymous leg still reports as a leg that failed, and a reason-less one
+    /// still says a reason was not reported instead of rendering an empty
+    /// clause nobody can act on.
+    #[test]
+    fn a_survey_failure_naming_nothing_still_reports_a_failed_leg() {
+        let sparse = r#"{
+            "dry_run": true,
+            "factories_surveyed": 3,
+            "reconciled": [],
+            "errors": [{}, {"factory_name": "vps"}]
+        }"#;
+        let snapshot = ok_reconcile_snapshot(parse_reconcile_runs_snapshot(sparse));
+
+        assert_eq!(
+            snapshot.skipped(),
+            [
+                "surveyed an unnamed factory could not be reached: no reason reported".to_owned(),
+                "surveyed factory vps could not be reached: no reason reported".to_owned(),
+            ]
+        );
+    }
+
+    /// AC1's OTHER boundary: a survey that reached NONE of the factories it
+    /// surveyed observed nothing, so it is refused. Rendering its empty orphan
+    /// set would be the same every-factory-is-clean lie the zero-survey refusal
+    /// exists to stop, reached a different way.
+    #[test]
+    fn reaching_none_of_the_surveyed_factories_is_refused() {
+        let all_down = r#"{
+            "dry_run": true,
+            "factories_surveyed": 2,
+            "reconciled": [],
+            "errors": [
+                {"factory_name": "hp", "reason": "factory-ps-failed"},
+                {"factory_name": "vps", "reason": "factory-ps-failed"}
+            ]
+        }"#;
+
+        check(
+            parse_reconcile_runs_snapshot(all_down)
+                .is_err_and(|reason| reason.contains("reached none of the 2 factories")),
+            "a survey that reached no factory must be refused, not rendered as a clean one",
+        );
+    }
+
+    /// AC1: the normalizer declares the partially-reached survey PARTIAL, which
+    /// is the one verdict that survives the failed command exit a down standby
+    /// causes -- and a survey that reached every leg stays an ordinary
+    /// observation, so the exception cannot widen by accident.
+    #[test]
+    fn only_a_partially_reached_survey_is_declared_partial() {
+        let partial = ObservedSource::new(
+            SourceAdapterKind::Reconciler,
+            "console",
+            RECONCILE_RUNS_ONE_LEG_DOWN,
+        );
+        let whole = ObservedSource::new(
+            SourceAdapterKind::Reconciler,
+            "console",
+            RECONCILE_RUNS_DRY_RUN_JSON,
+        );
+
+        check(
+            ok_parsed_observation(parse_reconcile_runs_observation(&partial)).is_partial(),
+            "a survey with an unreached leg must declare itself partial",
+        );
+        check(
+            !ok_parsed_observation(parse_reconcile_runs_observation(&whole)).is_partial(),
+            "a survey that reached every factory is an ordinary observation",
+        );
+    }
+
+    /// AC1/AC2 at the ADAPTER seam: a non-zero command exit whose payload
+    /// declares a partially-reached survey is OBSERVED -- the runs it collected
+    /// land, the positive availability marker lands, and no not-observed
+    /// finding is written. This is the whole of defect 1's fix: before it, the
+    /// console lost reconciliation visibility permanently over a standby
+    /// factory nobody routes work to.
+    #[test]
+    fn a_failed_exit_declaring_a_partial_survey_is_observed_not_unavailable() {
+        let probe = StubProbe::command(SourceProbeOutcome::observed_failed(
+            RECONCILE_RUNS_ONE_LEG_DOWN,
+            "source command exited non-zero (exit status: 1): stderr: fabro ps exited 1",
+        ));
+        let adapter = ok_observed_source_adapter(ObservedSourceAdapter::new(
+            &probe,
+            SourceAdapterKind::Reconciler,
+            "console",
+            SourceObservationPlan::command(
+                "dispatcher",
+                &["reconcile-runs", "--dry-run", "--json"],
+            ),
+            parse_reconcile_runs_observation,
+        ));
+        let request =
+            ok_adapter_poll_request(AdapterPollRequest::new("reconcile-runs:console", None, 0));
+
+        let poll = ok_adapter_poll(adapter.poll(&request));
+        let kinds = poll
+            .events()
+            .iter()
+            .map(|event| event.event().event_type().contract_name())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            kinds,
+            [
+                "factory.run_orphans_observed",
+                "source.observed_finding_observed"
+            ]
+        );
+    }
+
+    /// The strict rule is UNTOUCHED for everything else a failed exit can
+    /// print. A payload the normalizer cannot read says nothing about which
+    /// part of the source was reached, so the not-observed finding stands and
+    /// carries the command's own verbatim diagnostic.
+    #[test]
+    fn a_failed_exit_whose_payload_proves_nothing_is_still_unavailable() {
+        let probe = StubProbe::command(SourceProbeOutcome::observed_failed(
+            "Traceback (most recent call last): ...",
+            "source command exited non-zero (exit status: 2): stderr: boom",
+        ));
+        let adapter = ok_observed_source_adapter(ObservedSourceAdapter::new(
+            &probe,
+            SourceAdapterKind::Reconciler,
+            "console",
+            SourceObservationPlan::command(
+                "dispatcher",
+                &["reconcile-runs", "--dry-run", "--json"],
+            ),
+            parse_reconcile_runs_observation,
+        ));
+        let request =
+            ok_adapter_poll_request(AdapterPollRequest::new("reconcile-runs:console", None, 0));
+
+        let poll = ok_adapter_poll(adapter.poll(&request));
+        assert_eq!(poll.events().len(), 1);
+        assert_eq!(
+            poll.events()[0].event().event_type().contract_name(),
+            "source.not_observed_finding_observed"
+        );
+        check(
+            matches!(
+                poll.events()[0].payload(),
+                SourcePayload::NotObservedFinding(finding)
+                    if finding.reason().contains("exit status: 2")
+            ),
+            "the not-observed finding must carry the command's own diagnostic",
         );
     }
 

@@ -108,6 +108,10 @@ pub fn run_interactive_tui(
         SourceStaleness::AllObserved,
         BTreeMap::new(),
         BTreeMap::new(),
+        // No adapter set to declare on this path: it runs no poller, so the
+        // render path restricts nothing and reports whatever the log holds
+        // (`console_application::source_registry`).
+        Vec::new(),
         &mut effect_sink,
     )
 }
@@ -130,6 +134,7 @@ pub fn run_interactive_tui_with_effect_sink(
     source_staleness: SourceStaleness,
     source_last_success: BTreeMap<String, String>,
     source_event_counts: BTreeMap<String, SourceEventCounts>,
+    current_source_names: Vec<String>,
     session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     enable_raw_mode()?;
@@ -158,6 +163,7 @@ pub fn run_interactive_tui_with_effect_sink(
         source_staleness,
         source_last_success,
         source_event_counts,
+        current_source_names,
         session,
     );
     let raw_mode_result = disable_raw_mode();
@@ -183,6 +189,7 @@ fn run_terminal_loop(
     source_staleness: SourceStaleness,
     source_last_success: BTreeMap<String, String>,
     source_event_counts: BTreeMap<String, SourceEventCounts>,
+    current_source_names: Vec<String>,
     session: &mut dyn TuiLiveSession,
 ) -> io::Result<Vec<TuiRuntimeEffect>> {
     let mut state = TuiInteractionState::new(0, TuiOverlay::None)
@@ -194,6 +201,10 @@ fn run_terminal_loop(
         .with_source_staleness(source_staleness)
         .with_source_last_success(source_last_success)
         .with_source_event_counts(source_event_counts)
+        // Declared ONCE for the session, unlike its re-probed neighbours above:
+        // the resolved adapter set is fixed by the checkout's configuration at
+        // resolution time (livespec-console-beads-fabro-rhh56m).
+        .with_current_source_names(current_source_names)
         // Seeded from the session BEFORE the first frame draws
         // (livespec-console-beads-fabro-pzbdbo.27): the very first `terminal.draw`
         // below must already say so if the background poller has not completed
