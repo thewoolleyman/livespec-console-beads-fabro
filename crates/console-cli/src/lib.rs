@@ -2557,9 +2557,19 @@ impl DoctorRunResult {
 /// are in reach -- each checkpoint row is read, filtered down to the ones
 /// [`checkpoint_reflects_a_successful_poll`] affirms as an actual successful
 /// poll (never one recording an honest not-observed finding at the same
-/// cadence), and its `adapter_id` (`"{source}:{repo}"`, the convention
-/// `refresh_sources` mints adapter ids under, above) is reduced to the bare
-/// source name `doctor`'s findings key on.
+/// cadence), and its `adapter_id` is reduced through
+/// [`adapter_id_source_name`] to the ENVELOPE SOURCE NAME every observation
+/// that adapter emits is attributed to.
+///
+/// Through that ONE reduction, never a second account of the id shape. This
+/// read used to split on the FIRST colon -- correct for the pre-z4y7kp
+/// `<source>:<repo>` ids, and wrong the moment z4y7kp made them
+/// `<source>:<factory>:<repo>`: `fabro:hp:<repo>` and `fabro:vps:<repo>` both
+/// collapsed onto the bare family name `fabro`. Measured 2026-09-12 on the
+/// real store, that credited hp's successful poll to a RETIRED `fabro` row
+/// whose roster line then advertised a timestamp belonging to a different
+/// source, and left both per-factory sources with no checkpoint-derived
+/// last-success of their own (livespec-console-beads-fabro-rhh56m).
 ///
 /// `pub` (not private): livespec-console-beads-fabro-mx9u.17's
 /// [`source_staleness_snapshot`] needs this same read, off the background
@@ -2569,21 +2579,27 @@ impl DoctorRunResult {
 pub fn checkpoint_source_last_success(
     store: &SqliteEventStore,
 ) -> EventStoreResult<Vec<(String, String)>> {
-    Ok(store
+    let mut last_success = store
         .list_checkpoints()?
         .into_iter()
         .filter_map(|(adapter_id, checkpoint_json, advanced_at)| {
             if !checkpoint_reflects_a_successful_poll(&checkpoint_json) {
                 return None;
             }
-            let source = adapter_id
-                .split(':')
-                .next()
-                .unwrap_or(&adapter_id)
-                .to_owned();
+            let source = adapter_id_source_name(&adapter_id).to_owned();
             Some((source, advanced_at))
         })
-        .collect())
+        .collect::<Vec<_>>();
+    // Ordered by the SOURCE NAME this read is keyed on, not by the adapter-id
+    // encoding it happened to arrive under. The two disagree: `fabro:hp:<repo>`
+    // sorts before `fabro:<repo>` as an id while `fabro` sorts before
+    // `fabro:hp` as a source, so a caller reading this list positionally would
+    // see an order that moves whenever a factory is added or renamed. The
+    // production consumer ([`last_successful_observed_at`]) folds this into a
+    // map and keeps the LATEST timestamp per source explicitly, so it is
+    // order-insensitive either way -- this makes the list say so.
+    last_success.sort();
+    Ok(last_success)
 }
 
 /// The three facts [`source_health_and_last_success`] reads together: the
