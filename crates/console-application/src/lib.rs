@@ -345,6 +345,8 @@ pub enum TuiView {
     Spec,
     /// Lanes variant.
     Lanes,
+    /// Plans variant.
+    Plans,
     /// Events variant.
     Events,
     /// Repos variant.
@@ -361,6 +363,7 @@ impl TuiView {
             Self::Attention,
             Self::Spec,
             Self::Lanes,
+            Self::Plans,
             Self::Events,
             Self::Repos,
             Self::Settings,
@@ -374,6 +377,7 @@ impl TuiView {
             Self::Attention => "Attention",
             Self::Spec => "Spec",
             Self::Lanes => "Lanes",
+            Self::Plans => "Plans",
             Self::Events => "Events",
             Self::Repos => "Repos",
             Self::Settings => "Settings",
@@ -2556,6 +2560,7 @@ pub struct TuiScreenModel {
     detail: Option<AttentionDetail>,
     view_items: Vec<ViewSummaryItem>,
     lane_board: LaneBoard,
+    plan_roster: Vec<PlanRosterItem>,
     lane_focus: LaneFocus,
     selected_lane_index: Option<usize>,
     selected_lane_item_index: Option<usize>,
@@ -2662,6 +2667,12 @@ impl TuiScreenModel {
     #[must_use]
     pub const fn lane_board(&self) -> &LaneBoard {
         &self.lane_board
+    }
+
+    /// The open plans, rank ordered from consumed work-item snapshots.
+    #[must_use]
+    pub fn plan_roster(&self) -> &[PlanRosterItem] {
+        &self.plan_roster
     }
 
     /// Which lane sub-view the `Lanes` view is showing (overview or a drilled-in
@@ -2790,7 +2801,11 @@ impl TuiScreenModel {
                 .selected_work_item_id()
                 .and_then(|work_item_id| self.work_item_by_id(work_item_id)),
             TuiView::Lanes => self.selected_lane_item(),
-            TuiView::Spec | TuiView::Events | TuiView::Repos | TuiView::Settings => None,
+            TuiView::Spec
+            | TuiView::Plans
+            | TuiView::Events
+            | TuiView::Repos
+            | TuiView::Settings => None,
         }
     }
 
@@ -2812,7 +2827,11 @@ impl TuiScreenModel {
                 LaneFocus::Overview => 0,
                 LaneFocus::Lane(lane) => self.lane_board.column(lane).map_or(0, LaneColumn::count),
             },
-            TuiView::Spec | TuiView::Events | TuiView::Repos | TuiView::Settings => 0,
+            TuiView::Spec
+            | TuiView::Plans
+            | TuiView::Events
+            | TuiView::Repos
+            | TuiView::Settings => 0,
         }
     }
 
@@ -2836,7 +2855,11 @@ impl TuiScreenModel {
                 .and_then(|index| self.attention_items.get(index))
                 .and_then(AttentionItem::work_item_id),
             TuiView::Lanes => self.selected_lane_item().map(LaneWorkItem::work_item_id),
-            TuiView::Spec | TuiView::Events | TuiView::Repos | TuiView::Settings => None,
+            TuiView::Spec
+            | TuiView::Plans
+            | TuiView::Events
+            | TuiView::Repos
+            | TuiView::Settings => None,
         }
     }
 
@@ -3224,6 +3247,7 @@ impl TuiScreenModel {
             (
                 TuiView::Lanes
                 | TuiView::Spec
+                | TuiView::Plans
                 | TuiView::Events
                 | TuiView::Repos
                 | TuiView::Settings,
@@ -3412,7 +3436,7 @@ fn model_pane_footer_hint(model: &TuiScreenModel) -> Cow<'static, str> {
                 "esc sub-view list | left/right focus | / search",
             )),
         },
-        TuiView::Spec | TuiView::Repos => Cow::Owned(with_global_status_hint(
+        TuiView::Spec | TuiView::Plans | TuiView::Repos => Cow::Owned(with_global_status_hint(
             "up/down move | left/right focus | / search",
         )),
     }
@@ -4582,6 +4606,129 @@ pub struct LaneBoard {
     columns: Vec<LaneColumn>,
 }
 
+/// One lane's child count on a plan roster row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanLaneCount {
+    lane: Lane,
+    count: usize,
+}
+
+impl PlanLaneCount {
+    #[must_use]
+    /// The child lane this count reports.
+    pub const fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    #[must_use]
+    /// The count of consumed child records in this lane.
+    pub const fn count(&self) -> usize {
+        self.count
+    }
+}
+
+/// One open plan row, derived only from consumed work-item snapshots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanRosterItem {
+    work_item_id: String,
+    title: Option<String>,
+    rank: String,
+    child_counts: Vec<PlanLaneCount>,
+    upstream_blocked_children: usize,
+}
+
+impl PlanRosterItem {
+    #[must_use]
+    /// The plan work-item id.
+    pub fn work_item_id(&self) -> &str {
+        &self.work_item_id
+    }
+
+    #[must_use]
+    /// The emitted plan title, when present.
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    #[must_use]
+    /// The published rank used for roster order.
+    pub fn rank(&self) -> &str {
+        &self.rank
+    }
+
+    #[must_use]
+    /// Counts of consumed child records in each lifecycle lane.
+    pub fn child_counts(&self) -> &[PlanLaneCount] {
+        &self.child_counts
+    }
+
+    #[must_use]
+    /// Blocked children carrying an `upstream-dep:` label.
+    pub const fn upstream_blocked_children(&self) -> usize {
+        self.upstream_blocked_children
+    }
+}
+
+/// Project the open-plan roster from consumed work-item snapshots.
+#[must_use]
+pub fn project_plan_roster(events: &[ConsoleEvent]) -> Vec<PlanRosterItem> {
+    let mut latest: BTreeMap<String, WorkItemSnapshot> = BTreeMap::new();
+    for event in events {
+        if *event.event_type() != EventType::WorkItemSnapshotObserved {
+            continue;
+        }
+        if let Some(snapshot) = work_item_snapshot_from_payload_json(event.payload_json()) {
+            latest.insert(snapshot.work_item_id().to_owned(), snapshot);
+        }
+    }
+    let mut plans = latest
+        .values()
+        .filter(|snapshot| {
+            snapshot.detail().item_type.as_deref() == Some("epic") && snapshot.lane() != Lane::Done
+        })
+        .map(|plan| {
+            let children = latest
+                .values()
+                .filter(|child| child.detail().parent.as_deref() == Some(plan.work_item_id()))
+                .collect::<Vec<_>>();
+            let counts = Lane::all()
+                .iter()
+                .map(|lane| PlanLaneCount {
+                    lane: *lane,
+                    count: children
+                        .iter()
+                        .filter(|child| child.lane() == *lane)
+                        .count(),
+                })
+                .collect::<Vec<_>>();
+            let upstream_blocked_children = children
+                .iter()
+                .filter(|child| {
+                    child.lane() == Lane::Blocked
+                        && child
+                            .detail()
+                            .labels
+                            .iter()
+                            .any(|label| label.starts_with("upstream-dep:"))
+                })
+                .count();
+            PlanRosterItem {
+                work_item_id: plan.work_item_id().to_owned(),
+                title: plan.detail().title.clone(),
+                rank: plan.rank().to_owned(),
+                child_counts: counts,
+                upstream_blocked_children,
+            }
+        })
+        .collect::<Vec<_>>();
+    plans.sort_by(|left, right| {
+        left.rank()
+            .cmp(right.rank())
+            .then_with(|| left.work_item_id().cmp(right.work_item_id()))
+    });
+    plans
+}
+
 impl LaneBoard {
     #[must_use]
     /// Return the columns value.
@@ -5085,6 +5232,7 @@ pub struct TuiProjection {
     attention_items: Vec<AttentionItem>,
     attention_total: usize,
     lane_board: LaneBoard,
+    plan_roster: Vec<PlanRosterItem>,
     factory_activity: Option<String>,
     action_failures: BTreeMap<String, ActionFailure>,
     command_outcome: Option<CommandOutcome>,
@@ -5210,6 +5358,7 @@ pub fn project_tui_events(events: &[ConsoleEvent], search_query: Option<&str>) -
         attention_items,
         attention_total,
         lane_board: project_lane_board(events),
+        plan_roster: project_plan_roster(events),
         factory_activity: factory_drain_activity(events),
         action_failures: project_action_failures(events),
         command_outcome: project_command_outcome(events),
@@ -5280,6 +5429,7 @@ pub fn render_tui_model(
     let overlay = normalize_overlay(state.overlay(), detail.as_ref());
     let active_view = state.active_view();
     let lane_board = projection.lane_board.clone();
+    let plan_roster = projection.plan_roster.clone();
     let lane_focus = state.lane_focus();
     let selected_lane_index = match (active_view, lane_focus) {
         (TuiView::Lanes, LaneFocus::Overview) => {
@@ -5332,6 +5482,7 @@ pub fn render_tui_model(
         event_source_rows,
         selected_event_source_index,
         lane_board,
+        plan_roster,
         lane_focus,
         selected_lane_index,
         selected_lane_item_index,
@@ -6387,11 +6538,11 @@ const fn previous_focus_pane(current: FocusPane, active_view: TuiView) -> FocusP
 }
 
 /// Whether `active_view` renders a right-hand Detail pane (every view except
-/// `Lanes`, which spans the full body width beside the nav). The focus ring and
+/// `Lanes` and `Plans`, which span the full body width beside the nav). The focus ring and
 /// the spatial `right` walk both clamp against this so neither lands on a Detail
 /// pane the view does not draw.
 const fn view_has_detail_pane(active_view: TuiView) -> bool {
-    !matches!(active_view, TuiView::Lanes)
+    !matches!(active_view, TuiView::Lanes | TuiView::Plans)
 }
 
 #[must_use]
@@ -11159,10 +11310,10 @@ fn view_summary_items(
         TuiView::Spec => spec_view_items(events),
         TuiView::Events => events_container_items(events_focus, events, event_source_rows),
         TuiView::Repos => repos_view_items(events),
-        // The Attention, Lanes, and Settings views render their own projections
+        // The Attention, Lanes, Plans, and Settings views render their own projections
         // (the attention list / detail, the lane board, the dispatcher-settings
         // rows), not summary rows.
-        TuiView::Attention | TuiView::Lanes | TuiView::Settings => Vec::new(),
+        TuiView::Attention | TuiView::Lanes | TuiView::Plans | TuiView::Settings => Vec::new(),
     }
 }
 
@@ -11895,11 +12046,11 @@ mod tests {
         help_section_for_focus, help_section_for_view, hint_display_width, model_pane_footer_hint,
         overlay_footer_hint, per_item_verb_is_state_valid, plan_page_url, project_action_failures,
         project_attention, project_lane_board, project_orphaned_factory_runs, project_plan_page,
-        reduce_tui_interaction, render_plan_page_html, resolve_command_palette_action,
-        resolve_dispatcher_setting_edit, resolve_event_source_action, resolve_valve_action,
-        set_acceptance_policy_from_payload, set_admission_policy_from_payload, status_move_targets,
-        validate_operator_action, work_item_action_name, work_item_failure_event,
-        work_item_override_outcome,
+        project_plan_roster, reduce_tui_interaction, render_plan_page_html,
+        resolve_command_palette_action, resolve_dispatcher_setting_edit,
+        resolve_event_source_action, resolve_valve_action, set_acceptance_policy_from_payload,
+        set_admission_policy_from_payload, status_move_targets, validate_operator_action,
+        work_item_action_name, work_item_failure_event, work_item_override_outcome,
     };
 
     #[track_caller]
@@ -13580,6 +13731,84 @@ mod tests {
     }
 
     #[test]
+    fn plan_roster_uses_only_consumed_snapshots_for_ranked_open_plan_rows() {
+        let events = [
+            plan_snapshot_event(
+                "evt_plan_later",
+                "plan-later",
+                "b0",
+                "open",
+                r#"{"title":"Later plan","item_type":"epic"}"#,
+            ),
+            plan_snapshot_event(
+                "evt_plan_first",
+                "plan-first",
+                "a0",
+                "open",
+                r#"{"title":"First plan","item_type":"epic"}"#,
+            ),
+            plan_snapshot_event(
+                "evt_plan_tie",
+                "plan-second",
+                "a0",
+                "open",
+                r#"{"title":"Second plan","item_type":"epic"}"#,
+            ),
+            plan_snapshot_event(
+                "evt_ready_child",
+                "child-ready",
+                "a1",
+                "open",
+                r#"{"parent":"plan-first","labels":["ordinary"]}"#,
+            ),
+            ConsoleEvent::fixture(
+                "evt_blocked_child",
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator",
+            )
+            .with_payload_json(
+                r#"{"repo":"console","work_item_id":"child-blocked","lane":"blocked","rank":"a2","status":"open","source_version":1,"detail":{"parent":"plan-first","labels":["upstream-dep:orchestrator"]}}"#
+                    .to_owned(),
+            ),
+            ConsoleEvent::fixture(
+                "evt_done_plan",
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator",
+            )
+            .with_payload_json(
+                r#"{"repo":"console","work_item_id":"done-plan","lane":"done","rank":"00","status":"done","source_version":1,"detail":{"title":"Closed plan","item_type":"epic"}}"#
+                    .to_owned(),
+            ),
+            ConsoleEvent::fixture("evt_ignored", EventType::CommandAccepted, "console"),
+        ];
+
+        let roster = project_plan_roster(&events);
+
+        assert_eq!(roster.len(), 3);
+        assert_eq!(roster[0].work_item_id(), "plan-first");
+        assert_eq!(roster[0].title(), Some("First plan"));
+        assert_eq!(roster[0].rank(), "a0");
+        assert_eq!(roster[1].work_item_id(), "plan-second");
+        assert_eq!(roster[1].title(), Some("Second plan"));
+        assert_eq!(roster[1].rank(), "a0");
+        assert_eq!(roster[2].work_item_id(), "plan-later");
+        assert_eq!(roster[2].title(), Some("Later plan"));
+        assert_eq!(roster[2].rank(), "b0");
+        let child_count = |lane| {
+            roster[0]
+                .child_counts()
+                .iter()
+                .find(|count| count.lane() == lane)
+                .map(super::PlanLaneCount::count)
+        };
+        assert_eq!(child_count(Lane::Ready), Some(1));
+        assert_eq!(child_count(Lane::Blocked), Some(1));
+        assert_eq!(child_count(Lane::Done), Some(0));
+        assert_eq!(roster[0].upstream_blocked_children(), 1);
+        assert_eq!(roster[1].upstream_blocked_children(), 0);
+    }
+
+    #[test]
     fn active_lane_distinguishes_claimed_items_from_executing_items() {
         let events = [
             lane_event(
@@ -13907,7 +14136,7 @@ mod tests {
         // pane, never the old single static string (Scenario 19 / TUI Contract).
         // This fixture's inbox is EMPTY ("attention: 0"), so the per-item valve
         // keys, record drill-in, and up/down navigation act on nothing.
-        assert_eq!(model.footer(), "1-6 view | ? help | q quit");
+        assert_eq!(model.footer(), "1-7 view | ? help | q quit");
     }
 
     #[test]
@@ -14706,7 +14935,7 @@ mod tests {
         .with_payload_json(payload_json.to_owned())
     }
 
-    const LANE_OVERVIEW_HINTS: &str = "up/down move | enter drill | 1-6 view | ? help | q quit";
+    const LANE_OVERVIEW_HINTS: &str = "up/down move | enter drill | 1-7 view | ? help | q quit";
 
     #[test]
     fn the_status_line_reports_a_succeeded_command_beside_the_context_hints() {
@@ -15184,7 +15413,7 @@ mod tests {
             next_section.overlay(),
             &TuiOverlay::Help {
                 focus: HelpFocus::Menu,
-                selected_section: help_section_for_view(TuiView::Events),
+                selected_section: help_section_for_view(TuiView::Plans),
                 scroll: 0,
             }
         );
@@ -15845,11 +16074,11 @@ mod tests {
         assert_eq!(
             down.footer(),
             "up/down move | enter re-poll | esc sub-view list | left/right focus | / search | \
-             1-6 view | ? help | q quit"
+             1-7 view | ? help | q quit"
         );
         assert_eq!(
             healthy.footer(),
-            "up/down move | esc sub-view list | left/right focus | / search | 1-6 view | ? help | \
+            "up/down move | esc sub-view list | left/right focus | / search | 1-7 view | ? help | \
              q quit"
         );
     }
@@ -16225,6 +16454,7 @@ mod tests {
             detail: None,
             view_items: Vec::new(),
             lane_board: project_lane_board(&[]),
+            plan_roster: Vec::new(),
             lane_focus: super::LaneFocus::Overview,
             selected_lane_index: None,
             selected_lane_item_index: None,
@@ -16289,6 +16519,7 @@ mod tests {
             detail: None,
             view_items: Vec::new(),
             lane_board: project_lane_board(&[]),
+            plan_roster: Vec::new(),
             lane_focus: super::LaneFocus::Overview,
             selected_lane_index: None,
             selected_lane_item_index: None,
@@ -22133,7 +22364,7 @@ mod tests {
         );
         assert!(model_pane_footer_hint(&settings_view_model()).contains("enter/space edit row"));
         // The read-only nav views surface select + focus-move + search.
-        let read_only = "up/down move | left/right focus | / search | 1-6 view | ? help | q quit";
+        let read_only = "up/down move | left/right focus | / search | 1-7 view | ? help | q quit";
         assert!(read_only.contains("left/right focus") && read_only.contains("search"));
         for view in [TuiView::Spec, TuiView::Repos] {
             let model = view_model(view);
@@ -22146,7 +22377,7 @@ mod tests {
         assert_eq!(events_overview.events_focus(), EventsFocus::Overview);
         assert_eq!(
             events_overview.footer(),
-            "up/down move | enter drill | left/right focus | / search | 1-6 view | ? help | q quit"
+            "up/down move | enter drill | left/right focus | / search | 1-7 view | ? help | q quit"
         );
         let events_drilled = build_tui_model_for_state(
             &[],
@@ -22159,7 +22390,7 @@ mod tests {
         assert_eq!(events_drilled.events_focus(), EventsFocus::StoredEvents);
         assert_eq!(
             events_drilled.footer(),
-            "esc sub-view list | left/right focus | / search | 1-6 view | ? help | q quit"
+            "esc sub-view list | left/right focus | / search | 1-7 view | ? help | q quit"
         );
     }
 
@@ -22674,7 +22905,7 @@ mod tests {
         // closed overlay here; production routes None to the pane hints first.
         assert_eq!(
             overlay_footer_hint(&TuiOverlay::None),
-            "1-6 view | ? help | q quit"
+            "1-7 view | ? help | q quit"
         );
     }
 
@@ -22946,7 +23177,7 @@ mod tests {
         let hint = item_hint(action_registry::ActionSurface::Attention, Lane::Done);
         assert_eq!(
             hint,
-            "up/down move | ]/[ jump | enter open | 1-6 view | ? help | q quit"
+            "up/down move | ]/[ jump | enter open | 1-7 view | ? help | q quit"
         );
     }
 
@@ -22959,7 +23190,7 @@ mod tests {
         let hint = item_hint(action_registry::ActionSurface::LaneDrill, Lane::Done);
         assert_eq!(
             hint,
-            "up/down move | enter item | esc lane list | 1-6 view | ? help | q quit"
+            "up/down move | enter item | esc lane list | 1-7 view | ? help | q quit"
         );
         // The one-row lane is the only case that drops it: there is nowhere to
         // move to, so naming the key would be the same dishonesty inverted.
@@ -22968,7 +23199,7 @@ mod tests {
                 &test_item_ctx(action_registry::ActionSurface::LaneDrill, Lane::Done),
                 1,
             ),
-            "enter item | esc lane list | 1-6 view | ? help | q quit"
+            "enter item | esc lane list | 1-7 view | ? help | q quit"
         );
     }
 
@@ -23029,85 +23260,85 @@ mod tests {
                 Attention,
                 Lane::Backlog,
                 true,
-                "up/down move | ]/[ jump | enter open | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-7 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::PendingApproval,
                 false,
-                "up/down move | ]/[ jump | enter open | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-7 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Ready,
                 false,
-                "up/down move | ]/[ jump | enter open | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | 1-7 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Active,
                 false,
-                "up/down move | ]/[ jump | enter open | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | n set-acceptance | k rework cap | 1-7 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Acceptance,
                 false,
-                "up/down move | ]/[ jump | enter open | s move-status | c accept | r reject | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | s move-status | c accept | r reject | 1-7 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Blocked,
                 false,
-                "up/down move | ]/[ jump | enter open | s move-status | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | s move-status | 1-7 view | ? help | q quit",
             ),
             (
                 Attention,
                 Lane::Done,
                 false,
-                "up/down move | ]/[ jump | enter open | 1-6 view | ? help | q quit",
+                "up/down move | ]/[ jump | enter open | 1-7 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Backlog,
                 true,
-                "up/down move | enter item | esc lane list | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
+                "up/down move | enter item | esc lane list | h handoff | s move-status | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-7 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::PendingApproval,
                 false,
-                "up/down move | enter item | esc lane list | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
+                "up/down move | enter item | esc lane list | s move-status | p approve | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-7 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Ready,
                 true,
-                "up/down move | enter item | esc lane list | h handoff | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | 1-6 view | ? help | q quit",
+                "up/down move | enter item | esc lane list | h handoff | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | 1-7 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Ready,
                 false,
-                "up/down move | enter item | esc lane list | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | 1-6 view | ? help | q quit",
+                "up/down move | enter item | esc lane list | s move-status | g merge cap | f fix cap | n set-acceptance | k rework cap | d dispatch | 1-7 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Active,
                 false,
-                "up/down move | enter item | esc lane list | n set-acceptance | k rework cap | 1-6 view | ? help | q quit",
+                "up/down move | enter item | esc lane list | n set-acceptance | k rework cap | 1-7 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Acceptance,
                 false,
-                "up/down move | enter item | esc lane list | s move-status | c accept | r reject | 1-6 view | ? help | q quit",
+                "up/down move | enter item | esc lane list | s move-status | c accept | r reject | 1-7 view | ? help | q quit",
             ),
             (
                 LaneDrill,
                 Lane::Blocked,
                 false,
-                "up/down move | enter item | esc lane list | s move-status | 1-6 view | ? help | q quit",
+                "up/down move | enter item | esc lane list | s move-status | 1-7 view | ? help | q quit",
             ),
             (
                 LaneDrill,
@@ -23115,7 +23346,7 @@ mod tests {
                 false,
                 // The terminal lane offers no verb and still names the move:
                 // the navigation fragment is the LIST's, not the verbs'.
-                "up/down move | enter item | esc lane list | 1-6 view | ? help | q quit",
+                "up/down move | enter item | esc lane list | 1-7 view | ? help | q quit",
             ),
         ] {
             let ctx = action_registry::ActionContext {
@@ -23156,7 +23387,7 @@ mod tests {
         let hint = selected_item_hint(&auto, TEST_LIST_ROWS);
         assert_eq!(
             hint,
-            "up/down move | ]/[ jump | enter open | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit"
+            "up/down move | ]/[ jump | enter open | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-7 view | ? help | q quit"
         );
         let approve = action_for_chord(KeyChord::plain('p')).map(|spec| stage_action(spec, &auto));
         assert_eq!(approve, Some(None));
@@ -23167,7 +23398,7 @@ mod tests {
         };
         assert_eq!(
             selected_item_hint(&drilled_auto, TEST_LIST_ROWS),
-            "up/down move | enter item | esc lane list | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-6 view | ? help | q quit"
+            "up/down move | enter item | esc lane list | s move-status | r reject | m set-admission | g merge cap | f fix cap | n set-acceptance | k rework cap | 1-7 view | ? help | q quit"
         );
 
         // The manual sibling keeps the valve offered and stageable.
@@ -23193,7 +23424,7 @@ mod tests {
         // advertising "enter drill" in both is the lie this surface fixes.
         // The lane OVERVIEW selects a LANE, not an item, so every per-item key
         // is inert there and none may be advertised.
-        let overview = "up/down move | enter drill | 1-6 view | ? help | q quit".to_owned();
+        let overview = "up/down move | enter drill | 1-7 view | ? help | q quit".to_owned();
         assert!(overview.contains("enter drill"));
         for inert in ["move-status", "p approve", "c accept", "set-admission"] {
             assert!(!overview.contains(inert));
@@ -23206,7 +23437,7 @@ mod tests {
 
         // An EMPTY drilled-in lane selects nothing: `enter` opens nothing and
         // every per-item key is inert, so neither is advertised.
-        let empty = "esc lane list | 1-6 view | ? help | q quit".to_owned();
+        let empty = "esc lane list | 1-7 view | ? help | q quit".to_owned();
         assert!(!empty.contains("enter item") && !empty.contains("enter drill"));
         assert!(!empty.contains("move-status") && !empty.contains("p approve"));
         // Nothing to move over either, so the navigation key goes too.
@@ -23214,7 +23445,7 @@ mod tests {
         assert!(empty.contains("esc lane list"));
 
         // Attention drops its per-item valves when the inbox is empty.
-        let attention_empty = "1-6 view | ? help | q quit".to_owned();
+        let attention_empty = "1-7 view | ? help | q quit".to_owned();
         assert!(!attention_empty.contains("p approve"));
         assert!(!attention_empty.contains("enter open"));
         // The open modal owns the hint line and names its own keys.
@@ -23514,7 +23745,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // The Settings surface: six views, the six dispatcher-setting rows, their
+    // The Settings surface: seven views, the six dispatcher-setting rows, their
     // per-edit writes, and the ordinary recorded edit with no arming ceremony.
     // -----------------------------------------------------------------------
 
@@ -23529,15 +23760,16 @@ mod tests {
     }
 
     #[test]
-    fn tui_has_six_views_including_settings() {
+    fn tui_has_seven_views_including_settings() {
         let views = TuiView::all();
-        assert_eq!(views.len(), 6);
+        assert_eq!(views.len(), 7);
         assert_eq!(
             views,
             [
                 TuiView::Attention,
                 TuiView::Spec,
                 TuiView::Lanes,
+                TuiView::Plans,
                 TuiView::Events,
                 TuiView::Repos,
                 TuiView::Settings,
@@ -25166,6 +25398,7 @@ mod tests {
             detail: Some(detail),
             view_items: vec![],
             lane_board: project_lane_board(&[]),
+            plan_roster: Vec::new(),
             lane_focus: LaneFocus::Overview,
             selected_lane_index: None,
             selected_lane_item_index: None,
@@ -25408,6 +25641,7 @@ mod tests {
             )),
             view_items: vec![],
             lane_board: project_lane_board(&[]),
+            plan_roster: Vec::new(),
             lane_focus: LaneFocus::Overview,
             selected_lane_index: Some(0),
             selected_lane_item_index: None,

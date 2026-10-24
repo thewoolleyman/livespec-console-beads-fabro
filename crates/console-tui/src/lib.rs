@@ -1880,10 +1880,10 @@ const fn right_input(model: &TuiScreenModel) -> Option<TuiTerminalInput> {
 }
 
 /// Whether the active view renders a right-hand Detail pane (every view except
-/// `Lanes`, which spans the full body width beside the nav). Used to clamp the
-/// rightmost focus step at Content on the Lanes view.
+/// `Lanes` and `Plans`, which span the full body width beside the nav). Used to clamp the
+/// rightmost focus step at Content on those views.
 const fn view_has_detail_pane(model: &TuiScreenModel) -> bool {
-    !matches!(model.active_view(), TuiView::Lanes)
+    !matches!(model.active_view(), TuiView::Lanes | TuiView::Plans)
 }
 
 /// `Tab` / `BackTab`: behind an overlay it is inert (the overlay owns navigation);
@@ -2351,7 +2351,7 @@ fn body_split_constraints(view: TuiView, width: u16) -> [Constraint; 3] {
 fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize {
     // The Lanes view spans the full body width beside the nav; the attention
     // and summary views keep the list/detail split.
-    if model.active_view() == TuiView::Lanes {
+    if matches!(model.active_view(), TuiView::Lanes | TuiView::Plans) {
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -2360,7 +2360,11 @@ fn render_body(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) -> usize
             ])
             .split(area);
         render_navigation(model, horizontal[0], buffer);
-        render_lanes(model, horizontal[1], buffer);
+        if model.active_view() == TuiView::Lanes {
+            render_lanes(model, horizontal[1], buffer);
+        } else {
+            render_plans(model, horizontal[1], buffer);
+        }
         return 0;
     }
     let horizontal = Layout::default()
@@ -2407,6 +2411,40 @@ fn render_lanes(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
         LaneFocus::Overview => render_lane_overview(model, area, buffer),
         LaneFocus::Lane(lane) => render_lane_drilldown(model, lane, area, buffer),
     }
+}
+
+/// Render the rank-ordered roster of open plans from consumed work-item records.
+fn render_plans(model: &TuiScreenModel, area: Rect, buffer: &mut Buffer) {
+    let items = model
+        .plan_roster()
+        .iter()
+        .map(plan_roster_line)
+        .map(ListItem::new)
+        .collect::<Vec<_>>();
+    let title = focus_title("Plans", content_focused(model));
+    let block = Block::new().borders(Borders::ALL).title(title);
+    if items.is_empty() {
+        Paragraph::new("No open plans observed")
+            .block(block)
+            .render(area, buffer);
+        return;
+    }
+    Widget::render(List::new(items).block(block), area, buffer);
+}
+
+/// One concise plan roster row, including only facts its consumed record set carries.
+fn plan_roster_line(item: &console_application::PlanRosterItem) -> String {
+    let lane_counts = item
+        .child_counts()
+        .iter()
+        .map(|count| format!("{} {}", count.lane().label(), count.count()))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    format!(
+        "{}  type plan  children {lane_counts}  upstream blocked {}  next action —  last session / age —  plan slug —",
+        item.title().unwrap_or("—"),
+        item.upstream_blocked_children(),
+    )
 }
 
 /// The lane-overview home: every lane with its count and a preview of its top
@@ -3058,7 +3096,7 @@ fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
     for (label, value) in [
         ("id", item.work_item_id().to_owned()),
         ("repo", item.repo().to_owned()),
-        ("type", optional_field(detail.item_type.as_deref())),
+        ("type", display_item_type(detail.item_type.as_deref())),
         ("status", item.status().to_owned()),
         ("execution_state", item.execution_state().label().to_owned()),
         ("lane", item.lane().label().to_owned()),
@@ -3132,6 +3170,14 @@ fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
         None => lines.push(Line::from(ITEM_FIELD_ABSENT)),
     }
     lines
+}
+
+/// Render the plan-facing type vocabulary without exposing the storage spelling.
+fn display_item_type(item_type: Option<&str>) -> String {
+    match item_type {
+        Some("epic") => "plan".to_owned(),
+        other => optional_field(other),
+    }
 }
 
 /// Append a labelled free-text block for a possibly-multi-line record field.
@@ -3600,6 +3646,18 @@ fn help_lines_for_view(view: TuiView) -> Vec<Line<'static>> {
             action_registry::ActionSurface::LaneDrill,
         ))
         .collect(),
+        TuiView::Plans => vec![
+            Line::from(
+                "Plans -- the rank-ordered roster of open plans consumed from work-item records.",
+            ),
+            Line::from(
+                "Each row shows its title, child counts by lane, and blocked children carrying",
+            ),
+            Line::from("an upstream-dep: label. Facts the source does not publish remain —."),
+            Line::from(""),
+            Line::from("up / down    move the Content selection"),
+            Line::from("left / right move focus; left from Views opens the menu bar"),
+        ],
         TuiView::Events => vec![
             Line::from("Events -- a container for two sub-views: Stored events (the observed"),
             Line::from("source events, read-only, exactly as before) and Event sources (the"),
@@ -4648,7 +4706,7 @@ mod tests {
         TuiRuntimeEffect, TuiRuntimeEffectSink, TuiRuntimeEffectSinkOutcome, TuiTerminalInput,
         action_available_for_model, action_outcome_effect, apply_tick_refresh, attention_item_line,
         buffer_to_text, command_explainer_confirm_step, command_explainer_lines,
-        command_explanation_for_action, detail_lines, drain_input_burst,
+        command_explanation_for_action, detail_lines, display_item_type, drain_input_burst,
         effect_triggers_source_poll, elide_to_width, enter_content_input,
         full_width_explainer_rect, global_help_lines, header_help_lines, help_lines_for_view,
         help_outcome, is_navigation_interaction, key_event_to_terminal_input, menu_confirm_step,
@@ -6230,7 +6288,7 @@ mod tests {
             key_event_to_terminal_input(key(KeyCode::Right), &model),
             Some(TuiTerminalInput::Interaction(TuiInteraction::FocusDetail))
         );
-        for view in [TuiView::Spec, TuiView::Repos] {
+        for view in [TuiView::Spec, TuiView::Plans, TuiView::Repos] {
             let model = build_tui_model_for_state(
                 &demo_events(),
                 &TuiInteractionState::for_view(view, 0, TuiOverlay::None)
@@ -7782,7 +7840,7 @@ mod tests {
 
         let output = render_to_text(&model, 96, 24).unwrap_or_default();
 
-        assert!(output.contains("> 4 Events"), "{output}");
+        assert!(output.contains("> 5 Events"), "{output}");
         assert!(output.contains("Stored events"), "{output}");
         assert!(output.contains("Event sources"), "{output}");
     }
@@ -7804,7 +7862,7 @@ mod tests {
         assert_eq!(
             output
                 .as_ref()
-                .map(|rendered| rendered.contains("> 4 Events")),
+                .map(|rendered| rendered.contains("> 5 Events")),
             Ok(true)
         );
         assert_eq!(
@@ -8022,6 +8080,58 @@ mod tests {
                 .map(|rendered| rendered.contains("Revise-required events stay visible")),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn render_to_text_draws_plan_roster_rows_and_empty_placeholder() {
+        let events = [
+            ConsoleEvent::fixture(
+                "evt_plan",
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator",
+            )
+            .with_payload_json(
+                r#"{"repo":"console","work_item_id":"plan-one","lane":"ready","rank":"a0","status":"open","source_version":1,"detail":{"title":"Console redesign","type":"epic"}}"#
+                    .to_owned(),
+            ),
+            ConsoleEvent::fixture(
+                "evt_child",
+                EventType::WorkItemSnapshotObserved,
+                "orchestrator",
+            )
+            .with_payload_json(
+                r#"{"repo":"console","work_item_id":"child-one","lane":"blocked","rank":"a1","status":"open","source_version":1,"detail":{"parent":"plan-one","labels":["upstream-dep:orchestrator"]}}"#
+                    .to_owned(),
+            ),
+        ];
+        let state = TuiInteractionState::for_view(TuiView::Plans, 0, TuiOverlay::None)
+            .with_focus(FocusPane::Content);
+
+        let rendered = ok_render_text(render_to_text(
+            &build_tui_model_for_state(&events, &state),
+            200,
+            30,
+        ));
+
+        assert!(rendered.contains("Plans [focus]"), "{rendered}");
+        assert!(rendered.contains("Console redesign"), "{rendered}");
+        assert!(rendered.contains("type plan"), "{rendered}");
+        assert!(rendered.contains("blocked 1"), "{rendered}");
+        assert!(rendered.contains("upstream blocked 1"), "{rendered}");
+        assert!(rendered.contains("next action —"), "{rendered}");
+        assert!(!rendered.contains("epic"), "{rendered}");
+
+        let empty = ok_render_text(render_to_text(
+            &build_tui_model_for_state(&[], &state),
+            200,
+            30,
+        ));
+        assert!(empty.contains("No open plans observed"), "{empty}");
+    }
+
+    #[test]
+    fn epic_storage_type_is_rendered_as_plan() {
+        assert_eq!(display_item_type(Some("epic")), "plan");
     }
 
     #[test]
@@ -13519,8 +13629,8 @@ mod tests {
     #[test]
     fn help_menu_navigation_switches_the_right_pane_section() {
         // Navigating the left menu (HelpSelectNextSection) switches the right
-        // pane's content: from the Lanes section (auto-focused) to the Events
-        // section, the Lanes-only text disappears and the Events text appears.
+        // pane's content: from the Lanes section (auto-focused) to the Plans
+        // section, the Lanes-only text disappears and the Plans text appears.
         let events = lane_render_events();
         let opened = reduce_tui_interaction(
             &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None),
@@ -13531,19 +13641,19 @@ mod tests {
         let lanes_text = render_to_text(&lanes, 120, 40).unwrap_or_default();
         assert!(lanes_text.contains("lane board"), "{lanes_text}");
         assert!(
-            !lanes_text.contains("container for two sub-views"),
+            !lanes_text.contains("rank-ordered roster of open plans"),
             "{lanes_text}"
         );
 
         let next = reduce_tui_interaction(&opened, &events, TuiInteraction::HelpSelectNextSection);
-        let events_model = build_tui_model_for_state(&events, &next);
-        let events_text = render_to_text(&events_model, 120, 40).unwrap_or_default();
-        assert!(events_text.contains("> Events"), "{events_text}");
+        let plans_model = build_tui_model_for_state(&events, &next);
+        let plans_text = render_to_text(&plans_model, 120, 40).unwrap_or_default();
+        assert!(plans_text.contains("> Plans"), "{plans_text}");
         assert!(
-            events_text.contains("container for two sub-views"),
-            "{events_text}"
+            plans_text.contains("rank-ordered roster of open plans"),
+            "{plans_text}"
         );
-        assert!(!events_text.contains("lane board"), "{events_text}");
+        assert!(!plans_text.contains("lane board"), "{plans_text}");
     }
 
     #[test]
@@ -13602,6 +13712,7 @@ mod tests {
             (TuiView::Attention, "merged, ranked needs-attention"),
             (TuiView::Spec, "spec-side status"),
             (TuiView::Lanes, "work-item lane board"),
+            (TuiView::Plans, "rank-ordered roster"),
             (TuiView::Events, "container for two sub-views"),
             (TuiView::Repos, "fleet repo roster"),
             (TuiView::Settings, "dispatcher-settings surface"),

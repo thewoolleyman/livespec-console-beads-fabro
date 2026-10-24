@@ -566,7 +566,12 @@ pub struct WorkItemDetail {
     pub description: Option<String>,
     /// The work-item type (`bug`, `task`, ...). Named `item_type` because `type`
     /// is a Rust keyword; the wire key stays `type`.
+    #[serde(alias = "type")]
     pub item_type: Option<String>,
+    /// The published plan parent id, when this work-item is a plan child.
+    pub parent: Option<String>,
+    /// Labels published with the work-item record.
+    pub labels: Vec<String>,
     /// How the item entered the ledger (`freeform`, `gap`, ...).
     pub origin: Option<String>,
     /// The spec gap this item closes, when it is gap-tied.
@@ -692,10 +697,16 @@ impl WorkItemDetail {
             .iter()
             .map(WorkItemComment::digest)
             .collect::<String>();
-        let fields: [Option<&str>; 22] = [
+        let labels = self
+            .labels
+            .iter()
+            .map(|label| length_prefixed(label))
+            .collect::<String>();
+        let fields: [Option<&str>; 24] = [
             self.title.as_deref(),
             self.description.as_deref(),
             self.item_type.as_deref(),
+            self.parent.as_deref(),
             self.origin.as_deref(),
             self.gap_id.as_deref(),
             self.assignee.as_deref(),
@@ -717,6 +728,7 @@ impl WorkItemDetail {
             self.dispatch_fabro_run_id.as_deref(),
             self.dispatch_factory.as_deref(),
             Some(&comments),
+            Some(&labels),
         ];
         let mut encoded = String::new();
         for field in fields {
@@ -2976,6 +2988,21 @@ fn record_dependencies(
         .unwrap_or_default()
 }
 
+/// Read a string-array field without inventing labels for malformed values.
+fn record_strings(record: &serde_json::Map<String, serde_json::Value>, key: &str) -> Vec<String> {
+    record
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|elements| {
+            elements
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn record_comments(record: &serde_json::Map<String, serde_json::Value>) -> Vec<WorkItemComment> {
     record
         .get("comments")
@@ -3090,6 +3117,8 @@ pub fn parse_orchestrator_observation(
             title: record_text(&raw, "title"),
             description: record_text(&raw, "description"),
             item_type: record_text(&raw, "type"),
+            parent: record_text(&raw, "parent"),
+            labels: record_strings(&raw, "labels"),
             origin: record_text(&raw, "origin"),
             gap_id: record_text(&raw, "gap_id"),
             assignee: record_text(&raw, "assignee"),
@@ -6624,6 +6653,8 @@ mod tests {
         "title": "Render the whole record",
         "description": "line one\nline two",
         "type": "bug",
+        "parent": "parent-item",
+        "labels": ["upstream-dep:livespec-orchestrator-beads-fabro", 42],
         "origin": "freeform",
         "gap_id": "gap-77",
         "assignee": "fabro",
@@ -6687,6 +6718,11 @@ mod tests {
         // The markdown body is carried VERBATIM, newlines and all.
         assert_eq!(detail.description.as_deref(), Some("line one\nline two"));
         assert_eq!(detail.item_type.as_deref(), Some("bug"));
+        assert_eq!(detail.parent.as_deref(), Some("parent-item"));
+        assert_eq!(
+            detail.labels,
+            vec!["upstream-dep:livespec-orchestrator-beads-fabro".to_owned()]
+        );
         assert_eq!(detail.origin.as_deref(), Some("freeform"));
         assert_eq!(detail.gap_id.as_deref(), Some("gap-77"));
         assert_eq!(detail.assignee.as_deref(), Some("fabro"));

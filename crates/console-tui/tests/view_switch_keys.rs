@@ -181,8 +181,8 @@ fn the_status_line_names_the_view_switch_range() {
             let state = TuiInteractionState::for_view(*view, 0, TuiOverlay::None).with_focus(focus);
             let footer = build_tui_model_for_state(&[], &state).footer();
             assert!(
-                footer.contains("1-6 view"),
-                "the Status line for {} with {focus:?} focused must name `1-6 view`: {footer}",
+                footer.contains("1-7 view"),
+                "the Status line for {} with {focus:?} focused must name `1-7 view`: {footer}",
                 view.label()
             );
         }

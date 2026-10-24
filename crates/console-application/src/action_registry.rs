@@ -180,7 +180,7 @@ impl core::fmt::Display for KeyChord {
 /// handled outside the registry before chords existed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlobalAction {
-    /// Select one of the six views outright, without walking the Views nav or
+    /// Select one of the seven views outright, without walking the Views nav or
     /// cycling focus through the Header pane.
     GoToView(TuiView),
     /// Open the search overlay.
@@ -536,10 +536,10 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
     // item from Attention cost six keystrokes before any verb was available.
     // Neither route is what "go to that view" means.
     //
-    // Six entries rather than one parameterized entry: each is a distinct
+    // Seven entries rather than one parameterized entry: each is a distinct
     // destination with its own key and its own menu row, and a single row
-    // cycling a "view" parameter would hide five of the six from the menus.
-    // The Status band collapses them back into ONE `1-6 view` token
+    // cycling a "view" parameter would hide five of the seven from the menus.
+    // The Status band collapses them back into ONE `1-7 view` token
     // (`view_switch_hint_token`), so the honesty of the band does not pay for
     // the completeness of the menus.
     ActionSpec {
@@ -576,10 +576,21 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
         staging: ActionStaging::Global(GlobalAction::GoToView(TuiView::Lanes)),
     },
     ActionSpec {
+        id: "go-to-plans-view",
+        label: "Plans view",
+        hint_token: "4 plans",
+        hotkeys: &[KeyChord::plain('4')],
+        menu_path: &["View", "Go to view"],
+        parameter: None,
+        availability_summary: "Available globally from every view.",
+        availability: |_ctx| true,
+        staging: ActionStaging::Global(GlobalAction::GoToView(TuiView::Plans)),
+    },
+    ActionSpec {
         id: "go-to-events-view",
         label: "Events view",
-        hint_token: "4 events",
-        hotkeys: &[KeyChord::plain('4')],
+        hint_token: "5 events",
+        hotkeys: &[KeyChord::plain('5')],
         menu_path: &["View", "Go to view"],
         parameter: None,
         availability_summary: "Available globally from every view.",
@@ -589,8 +600,8 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
     ActionSpec {
         id: "go-to-repos-view",
         label: "Repos view",
-        hint_token: "5 repos",
-        hotkeys: &[KeyChord::plain('5')],
+        hint_token: "6 repos",
+        hotkeys: &[KeyChord::plain('6')],
         menu_path: &["View", "Go to view"],
         parameter: None,
         availability_summary: "Available globally from every view.",
@@ -600,8 +611,8 @@ pub static ACTION_REGISTRY: &[ActionSpec] = &[
     ActionSpec {
         id: "go-to-settings-view",
         label: "Settings view",
-        hint_token: "6 settings",
-        hotkeys: &[KeyChord::plain('6')],
+        hint_token: "7 settings",
+        hotkeys: &[KeyChord::plain('7')],
         menu_path: &["View", "Go to view"],
         parameter: None,
         availability_summary: "Available globally from every view.",
@@ -852,7 +863,7 @@ fn view_switch_digits() -> Vec<char> {
 }
 
 /// The ONE Status-band token standing for every registered view-switch key, as
-/// a digit RANGE: `1-6 view`.
+/// a digit RANGE: `1-7 view`.
 ///
 /// The band names a range rather than the six per-action tokens because those
 /// tokens would cost roughly sixty columns on every pane, and the Status band is
@@ -1113,13 +1124,13 @@ pub enum HintPriority {
 /// transient cue, and is ranked with the navigation keys. Two segments this
 /// default gets WRONG are checked first: the command-outcome verdict, which is
 /// why the Status band's fitter classifies that one itself rather than asking
-/// here, and the collapsed view-switch range (`1-6 view`) from
+/// here, and the collapsed view-switch range (`1-7 view`) from
 /// [`view_switch_hint_token`] — it stands for six REGISTERED actions
 /// collapsed into one token by [`global_status_hint_tokens`], not a raw
 /// navigation cue, so it is ranked with [`HintPriority::Verb`] rather than
 /// falling through to the Navigation default. `Navigation`'s whole
 /// justification (see its variant doc) is that it is absent from the Help
-/// roster's per-item action list; the six view-switch actions this token
+/// roster's per-item action list; the seven view-switch actions this token
 /// stands for are each a registered action WITH a menu row, so they are
 /// exactly as recoverable behind the overflow marker's `?` door as any other
 /// verb.
@@ -1634,7 +1645,7 @@ mod tests {
     #[test]
     fn global_status_hint_tokens_derive_from_the_registry() {
         let tokens = global_status_hint_tokens();
-        // The view-switch range is ONE token standing for six registered
+        // The view-switch range is ONE token standing for seven registered
         // actions, and it leads: it is the cheapest way out of the pane the
         // operator is in, so it reads before the modal/exit keys.
         let mut expected: Vec<String> =
@@ -1651,17 +1662,20 @@ mod tests {
                 .map(|spec| spec.hint_token.to_owned()),
         );
         assert_eq!(tokens, expected);
-        assert_eq!(tokens, ["1-6 view", "? help", "q quit"]);
+        assert_eq!(tokens, ["1-7 view", "? help", "q quit"]);
     }
 
     #[test]
     fn the_view_switch_range_spans_the_registered_view_chords() {
         // Derived, not literal: the token must name the FIRST and LAST digit the
         // registry actually binds, so a seventh view widens it by construction.
-        assert_eq!(super::view_switch_digits(), ['1', '2', '3', '4', '5', '6']);
+        assert_eq!(
+            super::view_switch_digits(),
+            ['1', '2', '3', '4', '5', '6', '7']
+        );
         assert_eq!(
             super::view_switch_hint_token(&super::view_switch_digits()),
-            Some("1-6 view".to_owned())
+            Some("1-7 view".to_owned())
         );
         // A single bound key is named outright rather than as a one-member
         // range, and an EMPTY set contributes no token at all — the band never
