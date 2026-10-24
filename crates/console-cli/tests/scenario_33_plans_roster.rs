@@ -155,7 +155,7 @@ fn plans_roster_is_rank_ordered_and_leaves_unpublished_plan_facts_absent() -> Re
         "the human-facing plan surface never exposes the storage type: {rendered}"
     );
     assert!(
-        rendered.contains("4 Plans") && rendered.contains("Plans [focus]"),
+        rendered.contains("> 4 Plans"),
         "Plans is the fourth direct view and is named in the view roster: {rendered}"
     );
 
