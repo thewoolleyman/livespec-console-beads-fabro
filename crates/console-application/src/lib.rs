@@ -4939,7 +4939,7 @@ pub fn render_plan_page_html(epic_id: &str, page: &PlanPage) -> String {
     html.push_str(" at ");
     html.push_str(&escape_html(&plan_page_url(epic_id)));
     html.push_str("</div>");
-    html.push_str("<h2>Epic</h2>");
+    html.push_str("<h2>Plan</h2>");
     if let Some(epic) = page.epic() {
         render_plan_work_item(&mut html, epic);
     } else {
