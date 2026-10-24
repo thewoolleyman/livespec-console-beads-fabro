@@ -344,6 +344,38 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
     Ok(())
 }
 
+/// Scenario 33 — Plans remains a peer view for the global Help shortcut in the
+/// shipped terminal path.
+///
+/// This regression drives the exact raw `?` keystroke from Plans and waits for
+/// the resulting settled frame. A capture taken immediately after `send-keys`
+/// can observe the preceding frame while the terminal event loop is still
+/// painting; the assertion must therefore observe the rendered result, rather
+/// than mistake that transient frame for an unbound shortcut.
+#[test]
+#[ignore = "real-TUI tmux E2E; run via `just check-e2e-tmux` (needs tmux + release binary)"]
+fn tmux_tui_e2e_plans_help_shortcut_scenario_33() -> HarnessResult<()> {
+    let repo = RepoFixture::new("e2e-plans-help", &PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    let console = TmuxConsole::launch(&repo)?;
+
+    console.wait_for_settled("view: Attention", render_timeout())?;
+    console.send_keys(&["Down", "Down", "Down"])?; // Attention -> Spec -> Lanes -> Plans
+    console.wait_for_settled("view: Plans", render_timeout())?;
+
+    console.send_keys(&["?"])?;
+    let help = console.wait_for_settled("esc to exit", render_timeout())?;
+    assert!(
+        help.contains("> Plans") && help.contains("rank-ordered roster"),
+        "Help opened from Plans must auto-focus the Plans roster section:\n{help}"
+    );
+
+    console.send_keys(&["Escape"])?;
+    wait_until_absent(&console, "esc to exit", render_timeout())?;
+    console.send_keys(&["q"])?;
+    console.wait_for("TUI_EXIT=0", render_timeout())?;
+    Ok(())
+}
+
 /// Scenario 19 / B2 — the context-specific Status-line shortcut hints, driven
 /// live through a real `tmux` pane against the SHIPPED binary.
 ///
