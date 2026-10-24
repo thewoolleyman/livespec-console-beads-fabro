@@ -146,7 +146,10 @@ fn a_non_git_directory_still_falls_back_to_the_plain_basename() -> TestResult {
     // container with no `.git`). The git-aware resolution must degrade to the
     // pre-existing plain-basename behaviour rather than erroring or blanking
     // out the identity.
-    let root = make_scratch_dir("non-git-fallback")?;
+    let root = std::env::temp_dir().join(format!("non-git-fallback-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root)
+        .map_err(|error| format!("create {}: {error}", root.display()))?;
     let plain = root.join("livespec-console-beads-fabro");
     std::fs::create_dir_all(&plain)
         .map_err(|error| format!("create {}: {error}", plain.display()))?;
