@@ -276,10 +276,14 @@
           "registry": true,
           "bin": "/home/ubuntu/.local/state/fabro-currency/carrier-petri-v0.382-adeefec4c/fabro",
           "secret_channel": "native_secrets",
-          // livespec-ci-rust, not livespec-ci: this repository builds Rust
-          // (R622), and on a Petri-era engine the catalog environment named
-          // here decides the sandbox image (python-rust-agent-v1.126.0).
-          "environment": "livespec-ci-rust"
+          // factory-python-rust: this repository builds Rust (R622), and on a
+          // Petri-era engine the catalog environment named here decides the
+          // sandbox. It is the Kubernetes environment gmktec's `kubernetes-rust`
+          // provider builds from the python-rust-agent-v1.126.0 image
+          // (livespec-dev-tooling #2803), named under the fleet's environment
+          // rename (livespec-dev-tooling-s6go5s). Plan kubernetes-sandbox-backend
+          // (bd-ib-nmuyjc). Rollback to Docker: set it back to `livespec-ci-rust`.
+          "environment": "factory-python-rust"
         }
       },
       "default_factory": "petri",
