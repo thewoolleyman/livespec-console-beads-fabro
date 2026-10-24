@@ -93,13 +93,6 @@
   {
     "spec_root": "SPECIFICATION",
     "spec_file": "scenarios.md",
-    "heading": "## Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes",
-    "work_item": "livespec-console-beads-fabro-adf4nu",
-    "first_seen": "2026-09-29"
-  },
-  {
-    "spec_root": "SPECIFICATION",
-    "spec_file": "scenarios.md",
     "heading": "## Scenario 34 -- A dispatch resolves its factory through the host's factory registry",
     "work_item": "livespec-console-beads-fabro-y9hc",
     "first_seen": "2026-10-20"
