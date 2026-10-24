@@ -80,7 +80,15 @@ fn drive_one_repo(repo: &RepoFixture) -> HarnessResult<()> {
         "expected header priority fields for tenant {}:\n{screen}",
         repo.tenant()
     );
-    for label in ["Attention", "Spec", "Lanes", "Events", "Repos", "Settings"] {
+    for label in [
+        "Attention",
+        "Spec",
+        "Lanes",
+        "Plans",
+        "Events",
+        "Repos",
+        "Settings",
+    ] {
         assert!(
             screen.contains(label),
             "navigation label {label:?} missing for tenant {}:\n{screen}",
@@ -227,7 +235,7 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
         help.contains("> Attention"),
         "help opened from Attention must auto-focus the Attention section:\n{help}"
     );
-    for label in ["Spec", "Lanes", "Events", "Repos", "Settings"] {
+    for label in ["Spec", "Lanes", "Plans", "Events", "Repos", "Settings"] {
         assert!(
             help.contains(label),
             "menu section {label:?} missing:\n{help}"
@@ -275,7 +283,7 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
     );
 
     // --- navigating the left menu switches the right pane's content (down) ---
-    console.send_keys(&["Down"])?; // section Lanes -> Events
+    console.send_keys(&["Down", "Down"])?; // section Lanes -> Plans -> Events
     let events = console.wait_for_settled("container for two sub-views", render_timeout())?;
     assert!(
         events.contains("> Events"),
@@ -303,7 +311,7 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
 
     // --- left focuses the menu again; up moves the menu selection back ---
     console.send_keys(&["Left"])?;
-    console.send_keys(&["Up"])?; // section Events -> Lanes
+    console.send_keys(&["Up", "Up"])?; // section Events -> Plans -> Lanes
     let back = console.wait_for_settled("> Lanes", render_timeout())?;
     assert!(
         back.contains("lane board"),
@@ -319,7 +327,7 @@ fn tmux_tui_e2e_modal_help_scenario_18() -> HarnessResult<()> {
     );
 
     // --- `?` from the Settings pane opens auto-focused to the Settings section ---
-    console.send_keys(&["Down", "Down", "Down"])?; // Lanes -> Events -> Repos -> Settings
+    console.send_keys(&["Down", "Down", "Down", "Down"])?; // Lanes -> Plans -> Events -> Repos -> Settings
     console.wait_for_settled("view: Settings", render_timeout())?;
     console.send_keys(&["?"])?;
     let settings = console.wait_for_settled("esc to exit", render_timeout())?;
@@ -428,8 +436,8 @@ fn tmux_tui_e2e_status_line_context_hints() -> HarnessResult<()> {
     );
 
     // --- case 2 (part B): switch to the Settings pane; hints DIFFER from Lanes ---
-    // Down x3 moves the nav selection Lanes -> Events -> Repos -> Settings.
-    console.send_keys(&["Down", "Down", "Down"])?;
+    // Down x4 moves the nav selection Lanes -> Plans -> Events -> Repos -> Settings.
+    console.send_keys(&["Down", "Down", "Down", "Down"])?;
     let settings = console.wait_for_settled("view: Settings", render_timeout())?;
     assert!(
         settings.contains("edit row"),
@@ -648,8 +656,14 @@ fn tmux_tui_e2e_panes_operational_content_only_scenario_21() -> HarnessResult<()
     let lanes = console.wait_for_settled("view: Lanes", render_timeout())?;
     assert_no_baked_doc_prose(&lanes, "Lanes");
 
+    // --- sweep: the Plans pane (its rank-ordered plan roster), no doc prose ---
+    // One Down moves the nav selection Lanes -> Plans.
+    console.send_keys(&["Down"])?;
+    let plans = console.wait_for_settled("view: Plans", render_timeout())?;
+    assert_no_baked_doc_prose(&plans, "Plans");
+
     // --- case 2: the Events pane renders its operational count, no doc prose ---
-    // One Down moves the nav selection Lanes -> Events. Events is now a
+    // One Down moves the nav selection Plans -> Events. Events is now a
     // container (livespec-console-beads-fabro-mx9u.20.1): it lands on its own
     // "Stored events" / "Event sources" picker home first; Enter focuses the
     // Content pane, a second Enter drills into the (first, already-selected)
@@ -983,7 +997,7 @@ fn tmux_tui_e2e_first_frame_paints_before_the_effective_policy_read_answers() ->
     );
 
     // The Settings view, captured while the read is provably still in flight.
-    console.send_keys(&["6"])?;
+    console.send_keys(&["7"])?;
     let in_flight = console.wait_for("view: Settings", render_timeout())?;
     assert!(
         in_flight.contains(DISPATCHER_SETTINGS_NOT_YET_READ_TELL),
