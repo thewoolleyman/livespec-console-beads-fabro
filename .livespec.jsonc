@@ -243,9 +243,10 @@
       // /etc/livespec/fabro-factories.json; a dispatch resolves an entry from
       // that file BY NAME. Ratified here as SPECIFICATION/constraints.md
       // "Factory routing" (v054), carried by SPECIFICATION/scenarios.md
-      // "Scenario 34". The control node's registry maps `legacy` to the same hp
+      // "Scenario 34". The control node's registry mapped `legacy` to the same hp
       // :32276 instance the former `hp` entry named, and the former `vps` entry
-      // was already retired.
+      // was already retired. `legacy` itself was retired and removed on
+      // 2026-10-24 (plan fabro-currency).
       //
       // DEFAULT IS `petri` (spec v056, coordinator ruling R668, maintainer-
       // directed; the orchestrator's own cutover is bd-ib-iud52v, its PR
@@ -257,9 +258,7 @@
       // `secret_channel` `native_secrets` is required by Petri-era engines;
       // `environment` names the server-managed environment the dispatch
       // selects, which on a Petri-era server overrides the workflow's
-      // `[run.environment]` id. `legacy` stays declared, so an item that
-      // already recorded a `legacy` pin finishes on hp, and rollback is
-      // reverting the default. A recorded pin naming `hp`, `vps` or
+      // `[run.environment]` id. A recorded pin naming `legacy`, `hp`, `vps` or
       // `default` falls back to `default_factory`, and so now lands on petri.
       //
       // The console READS this table (crates/console-cli/src/factory_servers.rs)
@@ -269,9 +268,6 @@
       // crates/console-cli/tests/committed_factory_table_names_no_machine.rs,
       // which asserts this table's shape against the committed bytes.
       "factories": {
-        // legacy submits through the pinned 0.254 8869e88 client whose bytes match hp's
-        // declared engine, staged by the livespec-dev-tooling dev-host play (bd-ib-zb2hso).
-        "legacy": { "registry": true, "bin": "/home/ubuntu/.local/state/fabro-currency/carrier-legacy-v0.254-8869e88/fabro" },
         "petri": {
           "registry": true,
           "bin": "/home/ubuntu/.local/state/fabro-currency/carrier-petri-v0.382-adeefec4c/fabro",

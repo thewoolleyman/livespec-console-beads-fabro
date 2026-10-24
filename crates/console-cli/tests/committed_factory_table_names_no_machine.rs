@@ -8,11 +8,12 @@
 //! §"Factory routing" (spec v054), carried by `SPECIFICATION/scenarios.md`
 //! §"Scenario 34 -- A dispatch resolves its factory through the host's factory
 //! registry", whose FIRST scenario is exactly what this file proves: the
-//! committed `dispatcher.factories` table declares registry-backed entries
-//! named `legacy` and `petri`, no entry carries a `server` or `docker_host`
+//! committed `dispatcher.factories` table declares one registry-backed entry
+//! named `petri`, no entry carries a `server` or `docker_host`
 //! value, and `dispatcher.default_factory` names `petri` (spec v056,
 //! coordinator ruling R668, the Petri-era cutover).
-//! `legacy` was the default through spec v055.
+//! `legacy` was the default through spec v055, and was removed from the table on
+//! 2026-10-24 when its hp-xubuntu instance was retired (plan fabro-currency).
 //!
 //! Ground truth against the REAL committed `.livespec.jsonc`, not a fixture.
 //! `console-cli`'s parser fixtures already cover both entry shapes, and
@@ -22,7 +23,7 @@
 //! is the whole of the clause.
 //!
 //! The reading is split deliberately. The STRUCTURAL half -- exactly one
-//! entries, named `legacy` and `petri`, each registry-backed -- goes through the production
+//! entry, named `petri`, registry-backed -- goes through the production
 //! parser `parse_factory_servers`, so this test never re-implements the JSONC
 //! reader that module exists to own. The BYTE-LEVEL half -- that the table
 //! commits no `server` and no `docker_host` VALUE -- is read off the committed
@@ -46,10 +47,6 @@ type TestResult = Result<(), String>;
 
 /// The orchestrator's per-repo configuration file, relative to the repo root.
 const CONFIG_FILE: &str = ".livespec.jsonc";
-
-/// The fork-era factory name that rulings R318/R320 left in the committed
-/// table. It stays declared so recorded pins finish where they started.
-const LEGACY: &str = "legacy";
 
 /// The Petri-era factory name, and since spec v056 the committed default.
 const PETRI: &str = "petri";
@@ -99,10 +96,10 @@ fn committed_factories_declaration(committed: &str) -> Result<&str, String> {
     Err("the committed factories object is never closed".to_owned())
 }
 
-/// The committed `dispatcher.factories` table declares exactly the entries
-/// `legacy` and `petri`, each registry-backed, and names no machine.
+/// The committed `dispatcher.factories` table declares exactly the entry
+/// `petri`, registry-backed, and names no machine.
 #[test]
-fn the_committed_factory_table_declares_registry_backed_legacy_and_petri() -> TestResult {
+fn the_committed_factory_table_declares_registry_backed_petri_alone() -> TestResult {
     let committed = committed_config()?;
 
     // A registry that binds NOTHING, on purpose. A registry-backed entry then
@@ -115,9 +112,9 @@ fn the_committed_factory_table_declares_registry_backed_legacy_and_petri() -> Te
     let names: Vec<&str> = factories.iter().map(FactoryServer::name).collect();
     assert_eq!(
         names,
-        [LEGACY, PETRI],
+        [PETRI],
         "the committed dispatcher.factories table must declare exactly the \
-         entries {LEGACY} and {PETRI}"
+         entry {PETRI}"
     );
     for factory in &factories {
         let address = factory.address();
