@@ -123,6 +123,10 @@
       "reason": "Console-side GLOBAL action: it selects one of the console's own views and touches no work-item and no orchestrator state, so it has no `drive` action-id and never could. Registered 2026-09-08 so the direct view-switch digit carries a menu_path and a Help roster line rather than being a literal key arm no generated menu can reach \u2014 the second-encoding defect the registry exists to retire."
     },
     {
+      "action": "go-to-plans-view",
+      "reason": "Console-side GLOBAL action: it selects one of the console's own views and touches no work-item and no orchestrator state, so it has no `drive` action-id and never could. Registered with the Plans roster so the direct view-switch digit carries a menu_path and a Help roster line rather than being a literal key arm no generated menu can reach \u2014 the second-encoding defect the registry exists to retire."
+    },
+    {
       "action": "go-to-events-view",
       "reason": "Console-side GLOBAL action: it selects one of the console's own views and touches no work-item and no orchestrator state, so it has no `drive` action-id and never could. Registered 2026-09-08 so the direct view-switch digit carries a menu_path and a Help roster line rather than being a literal key arm no generated menu can reach \u2014 the second-encoding defect the registry exists to retire."
     },
