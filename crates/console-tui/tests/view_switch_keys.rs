@@ -1,4 +1,4 @@
-//! Direct view-switch keys: `1`..`6` select the six Views in `TuiView::all()`
+//! Direct view-switch keys: `1`..`7` select the seven Views in `TuiView::all()`
 //! order, from any body pane, without walking the nav or cycling focus.
 //!
 //! # Why this gate exists
@@ -29,7 +29,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// Written out rather than computed from the index: this is the OPERATOR-facing
 /// claim the gate makes, and a derivation would restate whatever the production
 /// code does instead of pinning what the keyboard must do.
-const VIEW_DIGITS: [char; 6] = ['1', '2', '3', '4', '5', '6'];
+const VIEW_DIGITS: [char; 7] = ['1', '2', '3', '4', '5', '6', '7'];
 
 /// The digit an operator presses for the view at `index` of `TuiView::all()`,
 /// or `'?'` for an index the binding does not cover — which
