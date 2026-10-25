@@ -1,2 +1,2 @@
-work_item=livespec-console-beads-fabro-3toz
-reason=Adds a fail-closed changed-files classifier so proven code-neutral documentation changes skip the Rust, real-TUI, mutation, and fuzz jobs while preserving the required ci-green context; all other or uncertain changes run the full gate. Maintainer pre-approved this governed workflow edit in the Codex session on 2026-09-10; no product code changes.
+work_item=livespec-console-beads-fabro-qtvhwe
+reason=Add a top-level concurrency group to release-please.yml so concurrent master pushes queue instead of racing on a stale release base (2026-10-25 PRs 3619/3620).
