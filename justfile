@@ -284,8 +284,25 @@ check:
         check-fork-drift
         check-red-green-replay
     )
+    # `SKIP_TARGETS` is the fleet's recognised skip contract, the one livespec's
+    # `check` recipe reads too. The delegated gate client exports the members
+    # that read authority held outside the tree into it, so the gate Job leaves
+    # them to the pushing host; since livespec-dev-tooling v1.134.2 the client
+    # refuses to submit a Job for a recipe that reads no recognised skip
+    # variable (livespec-dev-tooling-ebtm6t). Unset, the full aggregate runs.
+    read -ra skip_targets <<< "${SKIP_TARGETS:-}"
     failed=()
     for target in "${targets[@]}"; do
+        skip_this=0
+        for skipped in "${skip_targets[@]}"; do
+            if [[ "$target" = "$skipped" ]]; then
+                skip_this=1
+            fi
+        done
+        if [[ "$skip_this" -eq 1 ]]; then
+            echo "::: just ${target} (skipped)"
+            continue
+        fi
         echo "=== just ${target} ==="
         if ! just "${target}"; then
             failed+=("${target}")
