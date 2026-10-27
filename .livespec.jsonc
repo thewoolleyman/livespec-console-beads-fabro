@@ -100,31 +100,40 @@
   //   2026-08-16 — critique_mode, in_flight_alignment, revise_decision_mode,
   //     ratification_review, spec_pr_merge armed to their safe fully-autonomous
   //     values (epic livespec-jvdvx4 fleet-wide rollout, child livespec-jvdvx4.15).
-  //     ratification_reviewer_model was set to "fable" (then the fleet
-  //     convention, matching livespec core) because ratification_review:
-  //     "auto-spawn" is inert without a configured reviewer model
-  //     (effective_ratification_review falls back to requiring human input when
-  //     it is unset). THAT VALUE IS SUPERSEDED — see the 2026-08-26 entry; the
+  //     ratification_reviewer_model was given its first single-model value
+  //     (then the fleet convention, matching livespec core) because
+  //     ratification_review: "auto-spawn" is inert without a configured reviewer
+  //     model (effective_ratification_review falls back to requiring human input
+  //     when it is unset). THAT VALUE IS SUPERSEDED — see the later entries; the
   //     REASON for having a value at all still stands.
   //     doctor_dispositions and dispatcher.merge_on_review_cap are deliberately
   //     out of scope for this pass (see the child item for why).
-  //   2026-08-26 — ratification_reviewer_model moved "fable" -> "opus"
+  //   2026-08-26 — ratification_reviewer_model moved to "opus"
   //     (PR #847, merge sha 1028f593), maintainer-directed across the fleet.
-  //     Fable account capacity was exhausted that day and a ratification
-  //     reviewer died mid-review returning no verdict; because a revise requires
-  //     conforming evidence from the DESIGNATED model, every fable-designated
-  //     repository was hard-blocked from ratifying anything. This repository's
+  //     The previous reviewer's account capacity was exhausted that day and a
+  //     ratification reviewer died mid-review returning no verdict; because a
+  //     revise requires conforming evidence from the DESIGNATED model, every
+  //     repository designating it was hard-blocked from ratifying anything. This repository's
   //     designation is ordinary adopter configuration — no ratified clause
   //     requires it to name a particular model — so this is a configuration
   //     change, not a deviation from ratified text. The independent-review floor
   //     is UNTOUCHED: the reviewer is still separately spawned and read-only,
   //     and evidence still declares reviewer_model honestly and still requires
   //     the literal NO BLOCKERS verdict plus the content digest.
+  //   2026-10-26 — ratification_reviewer_model is the ordered list ["opus",
+  //     "gpt-6-astra"] (coordinator R70): livespec core v0.44.0 accepts a list,
+  //     auto-spawn selects the first entry and a review by any listed model
+  //     ratifies, so Codex reviews ratify again.
   "spec_governance": {
     "propose_change_mode": "batch",
     "critique_mode": "batch",
     "in_flight_alignment": "default-align",
-    "ratification_reviewer_model": "opus",
+    // ratification_reviewer_model: an ordered list. Opus is the primary
+    // ratification reviewer and auto-spawn selects it; gpt-6-astra (Codex) is the
+    // fallback, and a review by EITHER model ratifies. The models are
+    // interchangeable like any other model selection here. "auto-spawn" below is
+    // inert when this key is null.
+    "ratification_reviewer_model": ["opus", "gpt-6-astra"],
     "revise_decision_mode": "delegated",
     "ratification_review": "auto-spawn",
     "spec_pr_merge": "auto-on-green"
