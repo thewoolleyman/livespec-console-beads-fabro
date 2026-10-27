@@ -57,6 +57,13 @@
   },
   {
     "spec_root": "SPECIFICATION",
+    "spec_file": "non-functional-requirements.md",
+    "heading": "## Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict",
+    "work_item": "livespec-console-beads-fabro-3n5k7m",
+    "first_seen": "2026-10-27"
+  },
+  {
+    "spec_root": "SPECIFICATION",
     "spec_file": "scenarios.md",
     "heading": "## Scenario 10 -- A per-item override beats the global default, except `wip_cap`",
     "work_item": "livespec-console-beads-fabro-y9hc",
