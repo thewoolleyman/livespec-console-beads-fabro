@@ -282,7 +282,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         ("spec.md", 22_usize),
         ("contracts.md", 160),
         ("constraints.md", 24),
-        ("non-functional-requirements.md", 86),
+        ("non-functional-requirements.md", 102),
     ];
     let mut total = 0;
     for (file, want) in cases {
@@ -292,7 +292,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 292,
+        total, 308,
         "total normative clauses across the console spec"
     );
     Ok(())

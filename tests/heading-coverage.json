@@ -1612,5 +1612,78 @@
         "scenario": "Scenario 34 -- A dispatch resolves its factory through the host's factory registry"
       }
     ]
+  },
+  {
+    "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: an integration test or above is owed for this heading. It must show that a push from a delegating host runs the delegation client in place of `just check`, completes only on a passing executor verdict, and is refused on no verdict. The executor half is a host-captured proof that needs the VPS gates kubeconfig and the k3s gate cluster, which no factory sandbox carries. livespec-console-beads-fabro-3n5k7m owns it (the opt-in carrier of plan delegated-gate-fleet-rollout).",
+    "clauses": [
+      {
+        "gap_id": "gap-tll2spuc",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-px3igzs6",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-jjzzr6g7",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-cafjbdyz",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-4e5ou36r",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-i5xfsz73",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-lamj2uqz",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-6isdxaqw",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-yawihfhk",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-zolxdz7p",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-d2q3ygl2",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-zn6ooyxy",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-j6fjyntg",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-u5ijtgny",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-lk7pl6xv",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      },
+      {
+        "gap_id": "gap-h2bzzjdx",
+        "scenario": "Contributor Scenario L -- A delegating host's push gates on the remote executor and refuses on no verdict"
+      }
+    ],
+    "work_item": "livespec-console-beads-fabro-3n5k7m"
   }
 ]

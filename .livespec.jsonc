@@ -75,7 +75,13 @@
     // sibling, and a file-qualified entry is validated against a local clone
     // that does not exist on a runner, so CI would drop it as "not allowlisted".
     "livespec-dev-tooling": [
-      "§\"Fabro factory registry\""
+      "§\"Fabro factory registry\"",
+      "§\"Delegated pre-push gate\""
+    ],
+    // Added with the delegated pre-push gate subsection (plan
+    // delegated-gate-fleet-rollout). BARE form for the same reason as above.
+    "livespec": [
+      "§\"Enforcement-suite invocation\""
     ]
   },
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
