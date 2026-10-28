@@ -33,6 +33,12 @@ dev = [
     "livespec-dev-tooling",
     "livespec-runtime>=0.20.0",
     "returns>=0.25.0",
+    # Python tool set the canonical lint / type / coverage / LLOC checks run
+    # over the tracked dev-tooling helpers (same pins as the sibling repos).
+    "ruff==0.8.6",
+    "pyright==1.1.391",
+    "pytest==8.3.4",
+    "pytest-cov==6.0.0",
     # livespec-dev-tooling vendors structlog but declares no runtime
     # [project.dependencies], so its vendored structlog's own transitive
     # need for typing-extensions is unmet in this minimal env (other fleet
@@ -111,3 +117,68 @@ dataclasses_tree = { not_applicable = "pure-Rust workspace: no Python schemas/da
 # single-sourced neutral hook; the commit-refuse hook is the REUSED
 # livespec-dev-tooling installer (see the header of this file).
 neutral_hook_body_path = { not_applicable = "no Python hook body is shipped here; the commit-refuse hook is the reused livespec-dev-tooling installer" }
+
+# ---------------------------------------------------------------------------
+# Python tooling for the tracked dev-tooling helpers (`dev-tooling/*.py`): the
+# only first-party Python in this otherwise pure-Rust workspace. The canonical
+# lint / type / coverage / LLOC checks run over exactly that surface.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+src = ["dev-tooling"]
+extend-exclude = ["**/__pycache__/**"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # flake8-bugbear
+    "BLE",   # flake8-blind-except
+    "UP",    # pyupgrade
+    "SIM",   # flake8-simplify
+    "C90",   # mccabe complexity
+    "N",     # pep8-naming
+    "RUF",   # ruff-specific
+    "PTH",   # flake8-use-pathlib
+    "PIE",   # flake8-pie
+    "TID",   # flake8-tidy-imports
+    "ERA",   # eradicate
+    "ARG",   # flake8-unused-arguments
+    "PT",    # flake8-pytest-style
+    "ISC",   # flake8-implicit-str-concat
+]
+ignore = [
+    "ISC001",  # implicit-str-concat on one line; conflicts with the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# `dev-tooling/` and its mirror `tests/dev-tooling/` carry a hyphen that is not
+# a valid Python module-name character; neither tree is imported as a package.
+"dev-tooling/**.py" = ["N999"]
+"tests/dev-tooling/**.py" = ["N999"]
+
+[tool.pyright]
+include = ["dev-tooling", "tests/dev-tooling"]
+extraPaths = ["dev-tooling"]
+exclude = ["**/__pycache__/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/dev-tooling"]
+
+[tool.coverage.run]
+branch = true
+source = ["dev-tooling"]
+omit = [
+    "*/.venv/*",
+    "*/site-packages/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if __name__ == .__main__.:",
+]

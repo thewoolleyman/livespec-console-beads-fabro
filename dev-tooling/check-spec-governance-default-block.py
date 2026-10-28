@@ -6,9 +6,8 @@ import json
 import sys
 from pathlib import Path
 
-from returns.primitives.exceptions import UnwrapFailedError
-
 from livespec_runtime.spec_governance import verify_livespec_jsonc_default_block
+from returns.primitives.exceptions import UnwrapFailedError
 
 
 def main() -> int:
