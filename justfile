@@ -439,6 +439,31 @@ check-completeness:
 check-spec-governance-default-block:
     uv run python dev-tooling/check-spec-governance-default-block.py
 
+# Python tool-backed checks over the tracked dev-tooling helpers
+# (`dev-tooling/*.py`), the only first-party Python in this Rust workspace.
+# Scope and rule selection live in pyproject.toml ([tool.ruff], [tool.pyright]).
+check-lint:
+    uv run ruff check .
+
+check-types:
+    uv run pyright
+
+# Canonical 250-LLOC ceiling over every tracked first-party `.py`.
+check-file-lloc:
+    uv run python -m livespec_dev_tooling.checks.file_lloc
+
+# Canonical per-file coverage gate: every measured file at 100% line and
+# branch. Runs the helper tests with COVERAGE_FILE unset so the measurement
+# matches a clean CI job, then reads that run's `.coverage` once and deletes it
+# (consume-once, so a later standalone run can never report from stale data).
+# errexit is deliberately omitted so the cleanup runs on failure too.
+check-per-file-coverage:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    env -u COVERAGE_FILE uv run pytest tests/dev-tooling --cov --cov-branch --cov-config=pyproject.toml --cov-report=term-missing || { rm -f .coverage; exit 1; }
+    env -u COVERAGE_FILE uv run python -m livespec_dev_tooling.checks.per_file_coverage || { rm -f .coverage; exit 2; }
+    rm -f .coverage
+
 # errexit is deliberately omitted so every defect is printed before the gate fails.
 check-charters:
     #!/usr/bin/env bash

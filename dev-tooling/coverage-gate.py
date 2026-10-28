@@ -161,15 +161,8 @@ def _nameable(listing_path: Path) -> tuple[int, list[str]] | None:
     return count, rows
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        return _fail("usage: coverage-gate.py <llvm-cov-json> <missing-lines-txt>")
-    export_path, listing_path = (Path(a) for a in argv[1:])
-
-    doc = _load(export_path)
-    if doc is None:
-        return _fail("could not read the llvm-cov export; refusing to pass")
-
+def _check_listing(listing_path: Path) -> int | None:
+    """A failure code when the listing is unreadable or names uncovered lines, else None."""
     parsed = _nameable(listing_path)
     if parsed is None:
         return _fail("could not parse the missing-lines listing; refusing to pass")
@@ -182,7 +175,11 @@ def main(argv: list[str]) -> int:
             "For a grouped or-pattern arm, exercise the untaken alternative; never split "
             "the arm or relax clippy `match_same_arms`."
         )
+    return None
 
+
+def _check_lines(doc: dict) -> int | None:
+    """A failure code when the merged per-line view has a gap, else None after a PASS line."""
     counted, uncovered = _merged_line_uncovered(doc)
     if counted == 0:
         return _fail("llvm-cov export attributes no lines to any file; refusing to pass")
@@ -199,7 +196,11 @@ def main(argv: list[str]) -> int:
         f"(llvm-cov's scalar-merged summary counts {_summary_missed(doc)}; that figure is "
         "an instantiation-group arithmetic artifact and is not the metric)."
     )
+    return None
 
+
+def _check_regions(doc: dict) -> int | None:
+    """A failure code when the merged region view has a gap, else None after a PASS line."""
     uncovered_regions = _merged_region_uncovered(doc)
     if uncovered_regions:
         for row in uncovered_regions:
@@ -213,6 +214,21 @@ def main(argv: list[str]) -> int:
             "v044)."
         )
     print("coverage-gate: PASS — 0 uncovered regions in the merged reachable-region view.")
+    return None
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 3:
+        return _fail("usage: coverage-gate.py <llvm-cov-json> <missing-lines-txt>")
+    export_path, listing_path = (Path(a) for a in argv[1:])
+
+    doc = _load(export_path)
+    if doc is None:
+        return _fail("could not read the llvm-cov export; refusing to pass")
+
+    for failure in (_check_listing(listing_path), _check_lines(doc), _check_regions(doc)):
+        if failure is not None:
+            return failure
     return 0
 
 

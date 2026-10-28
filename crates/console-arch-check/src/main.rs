@@ -1686,6 +1686,7 @@ const KNOWN_TMUX_SUBCOMMANDS: &[&str] = &[
 /// resolve that exact distribution instead of an ambient host package.
 const ALLOWED_PYTHON_IMPORT_DISTRIBUTIONS: &[(&str, &str)] = &[
     ("livespec_runtime", "livespec-runtime"),
+    ("pytest", "pytest"),
     ("returns", "returns"),
 ];
 
@@ -1699,6 +1700,7 @@ const PYTHON_STDLIB_IMPORT_ROOTS: &[&str] = &[
     "datetime",
     "enum",
     "functools",
+    "importlib",
     "itertools",
     "json",
     "os",
@@ -1709,6 +1711,7 @@ const PYTHON_STDLIB_IMPORT_ROOTS: &[&str] = &[
     "sys",
     "tempfile",
     "textwrap",
+    "types",
     "typing",
     "unittest",
 ];
@@ -1746,8 +1749,12 @@ fn check_first_party_python_import_supply_paths(root: &Path, paths: &[PathBuf]) 
                 continue;
             }
         };
+        let siblings = sibling_python_modules(path);
         for import in python_import_roots(&source) {
-            if PYTHON_STDLIB_IMPORT_ROOTS.contains(&import.as_str()) || vendored.contains(&import) {
+            if PYTHON_STDLIB_IMPORT_ROOTS.contains(&import.as_str())
+                || vendored.contains(&import)
+                || siblings.contains(&import)
+            {
                 continue;
             }
             let Some(distribution) = allowed_python_distribution_for_import(&import) else {
@@ -1768,6 +1775,26 @@ fn check_first_party_python_import_supply_paths(root: &Path, paths: &[PathBuf]) 
         }
     }
     findings
+}
+
+/// Module names of the `.py` files beside `path`. A script run as
+/// `python dir/script.py` puts `dir` first on `sys.path`, so a bare import of a
+/// neighbouring module is first-party code in this repo, not a supply decision.
+fn sibling_python_modules(path: &Path) -> BTreeSet<String> {
+    let Some(entries) = path.parent().and_then(|dir| fs::read_dir(dir).ok()) else {
+        return BTreeSet::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|candidate| candidate.extension().is_some_and(|ext| ext == "py"))
+        .filter_map(|candidate| {
+            candidate
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 fn allowed_python_distribution_for_import(import: &str) -> Option<&'static str> {
@@ -2693,12 +2720,12 @@ mod tests {
         CrateNode, ObservedRustToolchain, check_adapter_isolation,
         check_backing_cli_default_tokens, check_beads_native_source_paths,
         check_cargo_bin_exe_compile_time_resolution_source, check_crate_graph_non_vacuity,
-        check_fabro_image_rust_toolchain_with_probe, check_forbid_unsafe, check_layering,
-        check_registry_bypass, check_source_rule_crate_coverage_for_names,
-        check_tmux_socket_scoping, check_tmux_socket_scoping_source, check_type_placement,
-        check_unwrap_expect, check_workspace_rust_version_matches_toolchain,
-        check_zero_beads_source_paths, curl_argv, fabro_python_rust_image,
-        is_integration_test_file, observed_rust_toolchain,
+        check_fabro_image_rust_toolchain_with_probe, check_first_party_python_import_supply_paths,
+        check_forbid_unsafe, check_layering, check_registry_bypass,
+        check_source_rule_crate_coverage_for_names, check_tmux_socket_scoping,
+        check_tmux_socket_scoping_source, check_type_placement, check_unwrap_expect,
+        check_workspace_rust_version_matches_toolchain, check_zero_beads_source_paths, curl_argv,
+        fabro_python_rust_image, is_integration_test_file, observed_rust_toolchain,
         observed_rust_toolchain_from_image_config, rust_files_for_tmux_scan,
     };
 
@@ -4073,6 +4100,77 @@ mod tests {
         });
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert!(findings[0].contains("rustfmt"), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    fn python_supply_root(name: &str, dev_group: &str) -> std::io::Result<std::path::PathBuf> {
+        let root = temp_scan_root(name)?;
+        fs::write(
+            root.join("pyproject.toml"),
+            format!("[dependency-groups]\ndev = [{dev_group}]\n"),
+        )?;
+        Ok(root)
+    }
+
+    #[test]
+    fn python_import_supply_accepts_stdlib_a_sibling_module_and_a_declared_distribution()
+    -> std::io::Result<()> {
+        let root = python_supply_root("python-supply-accepts", "\"pytest==8.3.4\"")?;
+        fs::create_dir_all(root.join("tools"))?;
+        let script = root.join("tools/script.py");
+        fs::write(
+            &script,
+            "import importlib\nimport types\nimport pytest\nfrom helper import run\n",
+        )?;
+        fs::write(root.join("tools/helper.py"), "import os\n")?;
+        let findings = check_first_party_python_import_supply_paths(
+            &root,
+            &[script, root.join("tools/helper.py")],
+        );
+        assert!(findings.is_empty(), "{findings:?}");
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn python_import_supply_still_flags_an_unlisted_import_and_an_undeclared_distribution()
+    -> std::io::Result<()> {
+        let root = python_supply_root("python-supply-flags", "\"returns>=0.25.0\"")?;
+        fs::create_dir_all(root.join("tools"))?;
+        let script = root.join("tools/script.py");
+        fs::write(&script, "import requests\nimport pytest\n")?;
+        let findings = check_first_party_python_import_supply_paths(&root, &[script]);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("`requests`") && f.contains("allow-list")),
+            "{findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("`pytest`") && f.contains("not declared")),
+            "{findings:?}"
+        );
+        fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn python_import_supply_does_not_treat_another_directorys_module_as_a_sibling()
+    -> std::io::Result<()> {
+        let root = python_supply_root("python-supply-not-sibling", "\"pytest==8.3.4\"")?;
+        fs::create_dir_all(root.join("tools"))?;
+        fs::create_dir_all(root.join("elsewhere"))?;
+        let script = root.join("tools/script.py");
+        fs::write(&script, "import helper\n")?;
+        fs::write(root.join("elsewhere/helper.py"), "")?;
+        let findings = check_first_party_python_import_supply_paths(&root, &[script]);
+        assert!(
+            findings.iter().any(|f| f.contains("`helper`")),
+            "{findings:?}"
+        );
         fs::remove_dir_all(&root).ok();
         Ok(())
     }
