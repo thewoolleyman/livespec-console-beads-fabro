@@ -204,6 +204,11 @@ For such an assertion you MUST **exercise the behaviour through the surface
 the assertion names**, driving the delivered artifact **as a user or operator
 would**.
 
+For example, when the assertion concerns code that accepts a fixture, exercise
+it by **running the code under test on a fixture** and **showing its output and
+exit status**. The fixture is the input to the delivered artifact, not a test
+double standing in for its behaviour.
+
 The output of this repository's own test suite **MUST NOT be the proof of a
 behavioural assertion** — not alone, and not as the assertion's only step. It
 MAY appear only as **supporting evidence beside a real exercise**. A suite
@@ -217,6 +222,20 @@ entry point, invoke that entry point the way an operator invokes it. Where it
 names a file and the text it carries, read that file out of the delivered
 tree. Reaching for `pytest` because it is nearer to hand is the failure this
 paragraph exists to stop.
+
+### Pre-publication proof refusal
+
+Before posting the record, audit each `factory_captured` assertion's proposed
+proof. If an assertion is evidenced by **test-suite output alone** — including
+a pass count or test-runner output — **DO NOT publish the record**. Name the
+assertion, then capture behaviour evidence for it: directly exercise the
+surface the assertion names and retain the delivered artifact's output and exit
+status. A suite run may accompany that evidence afterwards; it cannot replace
+it.
+
+If **every assertion carries behaviour evidence**, the audit is complete:
+**continue to Step 5 exactly as written**. Do not add or substitute another
+publication path; the audit changes only the suite-only refusal case.
 
 ### Show the observation, never print the conclusion
 

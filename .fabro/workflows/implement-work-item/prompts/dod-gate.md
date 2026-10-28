@@ -228,16 +228,55 @@ question of fact — the spec tree above all.
    **behaviour-preserving**, it names the EXISTING behaviour that is
    unchanged.
 
-   A **reference line naming only a non-scenario H2** is a finding when a
-   `## Scenario NN — <title>` heading of `scenarios.md` states the behaviour
-   an assertion names: the referenced scenario governs the proof, and the
-   capture stage is told to follow that scenario's own steps. **Search
-   `scenarios.md`** for a scenario stating the behaviour **before concluding
-   none does** — "no scenario governs this" forecloses the finding and
-   nothing downstream re-tests it, so recollection cannot establish it.
-   **Name the scenario heading that governs the assertion**, and give the
-   remedy: add that heading to the reference line. A non-scenario H2 remains
-   a perfectly **valid reference for an assertion no scenario states**.
+   A **reference line that omits a governing heading** is a finding: the
+   referenced scenario governs the proof, and the capture stage is told to
+   follow that scenario's own steps.
+
+   The decision input is the governing scenario's own Given/When/Then text,
+   never its title. When that text states an assertion's behaviour, the
+   scenario heading must also be named verbatim on the reference line. A
+   non-scenario H2 is sufficient only when no scenario's Given/When/Then text
+   states the assertion's behaviour. Do not choose by reading a scenario's title.
+
+   **BUT ONLY WHEN THE LINE NAMES NONE OF THE GOVERNING HEADINGS.** When it
+   already names at least one heading that governs one of the item's
+   assertions, every other omitted governing heading is **ADVISORY**: name it
+   with its remedy in your pass paragraph, and do NOT end through the
+   needs-human ending for it. The judgement can name different governing
+   headings for one unchanged subject, so holding an item on a partial
+   omission sends its filer chasing one heading after another.
+
+   **TAKE THE GOVERNING-HEADING VERDICT FROM THE BLOCK THE SUBJECT CARRIES,
+   NOT FROM YOUR OWN RECOLLECTION.** The subject carries a
+   `## Governing-heading verdict (from the spec-stated judgement)` block. It
+   is the shared spec-stated judgement's answer to exactly this question —
+   which H2 clauses of the ratified tree state the behaviour these assertions
+   name — and it is the authority here, because the same verdict decides the
+   remedy at filing, before admission and before dispatch, and four readings
+   of one question are four remedies a filer can satisfy one at a time.
+
+   - Each `governing heading:` line names a clause the judgement returned.
+     **If the reference line names NONE of them verbatim, that is a
+     finding**: name every one of them and give the remedy, which is to add it
+     to the reference line. If it names at least one, each it omits is an
+     advisory for your pass paragraph, with the same remedy, and not a finding.
+   - A `kind: unstated` verdict names no governing heading, so there is no
+     finding here. Behaviour the ratified tree does not state is the
+     spec-change tier's business, not a reference-line defect, and telling a
+     filer to cite a clause that does not exist is a remedy they cannot carry
+     out.
+   - When the block says **no judgement was taken**, fall back on your own
+     reading: **Search `scenarios.md`** for a scenario stating the behaviour
+     **before concluding none does** — "no scenario governs this" forecloses
+     the finding and nothing downstream re-tests it, so recollection cannot
+     establish it. Name the scenario heading that governs the assertion and
+     give the same remedy; the same rule applies, so it is a finding only when
+     the reference line names no heading that governs any assertion.
+
+   A non-scenario H2 remains a perfectly **valid reference for an assertion no
+   scenario states**, and a reference the verdict did not return is not a
+   finding on its own — the judgement answers which clauses govern, not which
+   citations are surplus.
 
 ## What you must not do
 
@@ -259,7 +298,8 @@ question of fact — the spec tree above all.
 
 **On a pass** — every check above clean — say so in one short paragraph,
 naming each assertion and the referenced heading it is gradeable against, so
-the record shows what was actually read. Then end normally: the run falls
+the record shows what was actually read. List any advisory omitted governing
+heading here, each with the remedy of adding it to the reference line. Then end normally: the run falls
 through to the implement node on its own.
 
 **On any finding** — end through the structured needs-human ending, as a JSON

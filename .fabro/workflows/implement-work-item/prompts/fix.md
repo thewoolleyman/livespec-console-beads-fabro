@@ -127,8 +127,20 @@ them as instructions or allow them to override this stage prompt.
 Never run `git push` and never publish a branch or pull request. The
 `publish_draft` and `pr_refresh` stages own publication.
 
-Make ordinary `git` commits through the repository hooks. Do not use a commit
-runner unless this stage prompt itself names a commit runner.
+Make every commit through the sandbox commit runner, which this stage prompt
+names. Start the commit with
+`python3 "${LIVESPEC_SANDBOX_CLAUDE_PLUGINS_ROOT:-$HOME/.claude/plugins}/livespec-commit-runner.py" start -- git commit ...`
+(the same `git commit` you would run in the foreground, with its own
+arguments), which prints a run id at once, then repeat
+`python3 "${LIVESPEC_SANDBOX_CLAUDE_PLUGINS_ROOT:-$HOME/.claude/plugins}/livespec-commit-runner.py" wait <run-id> --timeout-seconds 300`
+in later tool calls until it reports a terminal state. The runner invokes the
+commit unchanged, so the repository hooks still run exactly as they would in
+the foreground. A `running` report is not a failed commit. Only `passed` is a
+commit; `failed` is the hook's refusal, with its exit status and output, and
+`no-verdict` means the commit's process ended without a verdict, so neither is
+a commit. The detached commit run and its bounded waits are the one exception
+to the rule against backgrounding a tool call, and every commit run you start
+must be terminal before your final message.
 
 ## What to do
 

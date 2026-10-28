@@ -345,6 +345,7 @@ merge_hold = false
 # it with `set --` rather than quoting it.
 sandbox_check_suite = "sh -c 'echo LIVESPEC_INPUT_NOT_RENDERED: sandbox_check_suite was not supplied by the Dispatcher >&2; exit 1'"
 prepare_toolchain_mise = ""
+prepare_toolchain_python_sync = ""
 prepare_toolchain_lefthook = ""
 conformance_hook_install = ""
 conformance_verify_commit_refuse_hook = ""
@@ -551,12 +552,37 @@ script = "set -e; shallow=\"$(git rev-parse --is-shallow-repository)\"; if test 
 script = "set -- {{ inputs.prepare_toolchain_mise }}; test $# -eq 0 || \"$@\""
 
 [[run.prepare.steps]]
-script = "uv sync --all-groups"
+# Toolchain premise #2 — the PYTHON DEPENDENCY SYNC that populates the
+# sandbox's project environment (the `python_sync` arm of
+# `dispatcher.prepare_toolchain`); no-op for a repository that declares none.
+#
+# THIS WAS A BARE CONSTANT UNTIL bd-ib-xti6q, and the constant is what the
+# factory-sandbox-toolchain-disposition clause forbids: the two premises
+# bracketing it already ran nothing for a repository declaring nothing, while
+# this one assumed a `pyproject.toml` outright. Measured 2026-10-24 01:19Z on
+# run 01M5NQVKAENN, a dispatch of a JavaScript repository carrying
+# `package.json` and no `pyproject.toml`: the step exited 2 with `error: No
+# pyproject.toml found in current directory or any parent directory`, category
+# `deterministic`, BEFORE any agent turn — so every dispatch of every such
+# adopter without a target-local workflow failed identically and
+# re-dispatching could not help.
+#
+# POSITION IS LOAD-BEARING and is unchanged: it stays AFTER the
+# version-manager install, because this fleet's sync tool is one of the tools
+# that install resolves, and BEFORE the hook-manager install and the
+# conformance gate below, because both of those run through the project
+# environment this step populates.
+script = "set -- {{ inputs.prepare_toolchain_python_sync }}; test $# -eq 0 || \"$@\""
 
 [[run.prepare.steps]]
-# Toolchain premise #2 — the hook-manager install (the hook-manager arm of
+# Toolchain premise #3 — the hook-manager install (the hook-manager arm of
 # `dispatcher.prepare_toolchain`); no-op for an adopter without one.
 script = "set -- {{ inputs.prepare_toolchain_lefthook }}; test $# -eq 0 || \"$@\""
+
+[[run.prepare.steps]]
+# Scenario 204 records the implement turn's own failing declared-suite output.
+# The prompt invokes this runner; the incomplete-turn route only reads its file.
+script = "set -eu; root=\"${LIVESPEC_SANDBOX_CLAUDE_PLUGINS_ROOT:-$HOME/.claude/plugins}\"; mkdir -p \"$root\"; runner=\"$root/livespec-implement-check-suite\"; printf '%s\\n' '#!/bin/sh' 'set -u' 'verdict=$(git rev-parse --git-path livespec-implement-check-suite-verdict)' 'temporary=${verdict}.tmp.$$' 'set +e' 'set -- {{ inputs.sandbox_check_suite }}' 'if test \"$#\" -eq 1; then eval \"set -- $1\"; fi' '\"$@\" > \"$temporary\" 2>&1' 'status=$?' 'set -e' 'cat \"$temporary\"' 'if test \"$status\" -ne 0; then mv \"$temporary\" \"$verdict\"; else rm -f \"$temporary\"; fi' 'exit \"$status\"' > \"$runner\"; chmod 755 \"$runner\""
 
 [[run.prepare.steps]]
 # Dispatch-time baseline conformance gate — the MECHANISM (Conformance
@@ -565,8 +591,10 @@ script = "set -- {{ inputs.prepare_toolchain_lefthook }}; test $# -eq 0 || \"$@\
 # `dispatcher.conformance.hook_install`: `internal_livespec_dev_tooling`
 # renders the shared dev-tooling installer module (whose FAMILY-UNIFORM
 # canonical body ships in that wheel, so every dispatched sandbox installs
-# the identical body the same way; the prior `uv sync --all-groups` step put
-# the package in the sandbox venv), `shell_argv` runs the adopter's own
+# the identical body the same way; the Python-dependency-sync premise above
+# put the package in the sandbox's project environment, which is why a
+# repository declaring the internal mode must declare that premise too),
+# `shell_argv` runs the adopter's own
 # installer, and `no_op` skips the step. The structural body's hook-manager
 # delegation fires the Red-Green-Replay gates on every in-sandbox commit (the
 # refuse branch is skipped by the exemption marker set in the next step).
