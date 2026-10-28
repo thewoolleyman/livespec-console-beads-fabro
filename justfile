@@ -824,7 +824,21 @@ check-pre-commit:
     just check-clippy || exit $?
     just check-arch
 
+# Delegated pre-push gate (livespec-console-beads-fabro-3n5k7m). When the client's
+# `enabled` probe says this push delegates (opt-in switch AND a readable gates
+# kubeconfig on this host), the client's `run` REPLACES `just check`. The `exec`
+# is load-bearing: once delegation is selected, a run that reaches no verdict
+# must refuse the push and never fall through to the local aggregate. A host
+# without the credential (a Fabro sandbox) gets a non-zero `enabled`, which
+# prints that this push gated locally, and runs `just check` here.
+# No-errexit deviation: the delegation probe's exit status is handled explicitly.
 check-pre-push:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if uv run python -m livespec_dev_tooling.gate_remote_delegate enabled; then
+        echo ":: pre-push: delegated gate is enabled for this repo; gating on the cluster"
+        exec uv run python -m livespec_dev_tooling.gate_remote_delegate run
+    fi
     just check
 
 ensure-rust-quality-tools:

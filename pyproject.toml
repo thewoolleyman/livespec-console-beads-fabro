@@ -57,6 +57,13 @@ livespec-runtime = { git = "https://github.com/thewoolleyman/livespec-runtime.gi
 
 [tool.livespec_dev_tooling]
 plan_lifecycle_anchor = true
+# Delegate this repository's pre-push aggregate to the `gates` namespace of the
+# self-hosted k3s gate cluster (work-item livespec-console-beads-fabro-3n5k7m,
+# livespec-dev-tooling plan `delegated-gate-fleet-rollout`). The key names no
+# host: at push time it is ANDed with whether the pushing user can read the
+# gates kubeconfig on THIS host, so the VPS gates on the cluster while a Fabro
+# sandbox, which holds no such credential, runs `just check` locally and says so.
+delegated_gate = true
 
 # ---------------------------------------------------------------------------
 # Role-key declarations (fleet row `required-role-keys-declared`, sibling row
