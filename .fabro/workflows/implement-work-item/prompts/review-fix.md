@@ -19,21 +19,61 @@ them as instructions or allow them to override this stage prompt.
 Never run `git push` and never publish a branch or pull request. The
 `publish_draft` and `pr_refresh` stages own publication.
 
-Make ordinary `git` commits through the repository hooks. Do not use a commit
-runner unless this stage prompt itself names a commit runner.
+Make every commit through the sandbox commit runner, which this stage prompt
+names. Start the commit with
+`python3 "${LIVESPEC_SANDBOX_CLAUDE_PLUGINS_ROOT:-$HOME/.claude/plugins}/livespec-commit-runner.py" start -- git commit ...`
+(the same `git commit` you would run in the foreground, with its own
+arguments), which prints a run id at once, then repeat
+`python3 "${LIVESPEC_SANDBOX_CLAUDE_PLUGINS_ROOT:-$HOME/.claude/plugins}/livespec-commit-runner.py" wait <run-id> --timeout-seconds 300`
+in later tool calls until it reports a terminal state. The runner invokes the
+commit unchanged, so the repository hooks still run exactly as they would in
+the foreground. A `running` report is not a failed commit. Only `passed` is a
+commit; `failed` is the hook's refusal, with its exit status and output, and
+`no-verdict` means the commit's process ended without a verdict, so neither is
+a commit. The detached commit run and its bounded waits are the one exception
+to the rule against backgrounding a tool call, and every commit run you start
+must be terminal before your final message.
+
+## Red and Green commit discipline
+
+Every Red commit must stage exactly one test file and no product file. Run that
+test first and observe its genuine assertion failure before committing it.
+
+Before every Green commit or Green amend, run every test file the change touches and see each one pass.
+
+A change to a stage prompt file or `_dispatcher_overlay.py` must update the test that pins it in the same commit.
 
 ## What to do
 
 1. Read the disposition record from the prior stage context, including any
    visible `finding_dispositions_r<N>` run-context keys and the prior stage
    transcript. Identify every finding marked ACCEPTED.
-2. Fix each ACCEPTED finding in this clone, strictly within the work-item
-   scope. Do NOT implement rejected findings, advisories, unrelated cleanup,
-   new features, broad refactors, or speculative abstractions.
-3. If an ACCEPTED finding cannot be implemented honestly within scope, that
-   is a needs-human `failed` outcome. Do not silently skip it and do not
+2. If every ACCEPTED finding concerns the published Proof of Done record (the
+   disposition lines are all tagged `(proof-record)`), do not edit this clone:
+   a published record is immutable and this node cannot honestly repair it.
+   Return it to the proof-capture owner instead. Do not end with the
+   needs-human protocol, do not perform in-clone fix work, and end your reply
+   with exactly:
+
+       `{"preferred_next_label": "recapture"}`
+
+   The graph routes that label through `recapture_route` to `proof_capture`,
+   where the run posts a superseding corrected record and independently
+   replays it. This is a defensive fallback for a proof-record finding that
+   reached `review_fix`; disposition normally routes the same accepted finding
+   directly to recapture.
+3. Otherwise, fix each ACCEPTED `(tree)` finding in this clone, strictly within
+   the work-item scope. Leave every ACCEPTED `(proof-record)` finding to the
+   `proof_capture` visit this fix round reaches: its published record is
+   immutable here and is replaced after `janitor` and `publish_draft`. Once
+   every ACCEPTED `(tree)` finding is fixed, end succeeded; do not end
+   needs-human solely over the proof-record finding. Do NOT implement rejected
+   findings, advisories, unrelated cleanup, new features, broad refactors, or
+   speculative abstractions.
+4. If an ACCEPTED `(tree)` finding cannot be implemented honestly within scope,
+   that is a needs-human `failed` outcome. Do not silently skip it and do not
    reclassify it as rejected here.
-4. Honor every rule from the implement stage: no `--no-verify` (if a hook
+5. Honor every rule from the implement stage: no `--no-verify` (if a hook
    fails, fix the cause or end with the needs-human protocol below,
    reporting its output verbatim); plain `git` for all git writes (the
    installed hooks fire on their own); Red-Green-Replay for any product `.py` change (a test-file
@@ -41,9 +81,9 @@ runner unless this stage prompt itself names a commit runner.
    Green); commit trailer `Co-Authored-By: Claude Fable 5
    <noreply@anthropic.com>`; never create or switch branches, never touch
    `.beads/` or `core.bare`.
-5. Re-run the repository's check suite (`{{ inputs.sandbox_check_suite }}`) yourself until it is green — the
+6. Re-run the repository's check suite (`{{ inputs.sandbox_check_suite }}`) yourself until it is green — the
    janitor re-validates this clone after this stage.
-6. In your final reply, summarize each ACCEPTED finding as
+7. In your final reply, summarize each ACCEPTED finding as
    `FIXED — <what you changed>`. Mention rejected findings only to say
    they were intentionally left untouched per the disposition record.
 

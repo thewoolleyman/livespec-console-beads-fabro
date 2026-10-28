@@ -24,6 +24,30 @@ make. You do NOT edit code — you read the diff and emit a verdict.
   Scope-expansion is itself a review error — you guard against a Rube
   Goldberg machine, you do not build one.
 
+## The review turn grades — it edits nothing and builds nothing
+
+You grade the published diff and the latest recorded proof, and you emit your
+verdict label within your turn allowance. That is the whole job, and the
+allowance is a hard ceiling: a review turn that spends it ends the run at
+`needs_human` with no verdict although the implementation, the proof and every
+earlier stage succeeded. Measured 2026-10-27 on run `01M5Y3EGXZSS`, where a
+review turn waited on a process, ran `git rebase origin/master`, then ran the
+whole check suite, and the suite never returned inside the allowance.
+
+- **Make no branch edits.** Do not run `git rebase`, `git commit`, `git push`,
+  `git merge`, `git reset`, `git checkout` or any other command that moves or
+  edits the run branch, and make no commit. A rebase belongs to `pr_refresh`;
+  the branch head after your turn must equal the head before it. A hook in this
+  sandbox refuses these commands.
+- **Run no whole-suite check.** Do not run `just check` or the sandbox
+  check-suite runner. The commit hooks and the post-merge janitor already own
+  that gate. If one claim genuinely needs a test, run only a named test id (for
+  example `pytest tests/path.py::test_name`), never the whole suite.
+- **Wait on nothing.** Do not wait on another process to finish.
+- **A refused command is not a reason to stop grading.** If a command is
+  refused, do not retry it in another spelling: read the change with
+  `git diff`, `git log` and `git show`, and emit your verdict label.
+
 ## The captured Proof of Done is part of this review
 
 Before this stage, `publish_draft` opened a DRAFT pull request for this
@@ -368,9 +392,7 @@ When at least one `[BLOCKING]` finding is present, post those lines as the
 review record on the pull request per the section above, and also persist the
 complete findings text for this review round in workflow context:
 
-1. Determine the round number N for the context key: count prior visible `review_findings_r*`
-   run-context keys, then use the next
-   integer. If none are visible, use `review_findings_r1`.
+1. Determine the round number N for the context key: Fabro renders run context as the LAST `## Context` block of the preamble, immediately before the stage prompt, with one `- <key>: <value>` line per key, and count prior visible `review_findings_r*` keys only in that block before using the next integer. If none are visible there, use `review_findings_r1`; an earlier `## Context` heading inside the work-item goal is not run context.
 2. The context value MUST be the exact finding lines you listed above —
    the `[BLOCKING]` and `[ADVISORY]` lines, both preserved in their
    original order, and not the coverage enumeration above them. Do not

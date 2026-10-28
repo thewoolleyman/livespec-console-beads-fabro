@@ -344,9 +344,9 @@
       // The sandbox venue (`dispatcher.janitor.check_suite` also feeds
       // `inputs.sandbox_check_suite`) needs no pack provisioning — its prepare
       // chain establishes the premises — so nothing is lost there either.
-      // The two TOOLCHAIN premises and the three DISPATCH-TIME CONFORMANCE
+      // The three TOOLCHAIN premises and the three DISPATCH-TIME CONFORMANCE
       // premises the sandbox prepare chain establishes (orchestrator contract
-      // keys `dispatcher.prepare_toolchain.{mise,lefthook}` and
+      // keys `dispatcher.prepare_toolchain.{mise,python_sync,lefthook}` and
       // `dispatcher.conformance.{hook_install,verify_commit_refuse_hook,
       // verify_plugin_resolution}`). The Dispatcher resolves each ONCE and
       // renders it into the bundled workflow's `[[run.prepare.steps]]` as
@@ -362,8 +362,12 @@
       // so nothing ran `mise trust`, and the very next literal step
       // (`uv sync --all-groups`) died at 41 s with "Config files in
       // .mise.toml are not trusted" before any agent work. The retired
-      // literals were exactly the values below (the version-manager install
-      // is ANONYMOUS for the reason recorded on orchestrator work-item
+      // literals were exactly the values below, except `python_sync`, which the
+      // v0.254 graph projects and the fork ran as the literal
+      // `uv sync --all-groups` until the 2026-10-28 re-sync (work-item
+      // livespec-console-beads-fabro-pjceof); an absent declaration renders a
+      // silent no-op and leaves the sandbox venv unprovisioned. (The
+      // version-manager install is ANONYMOUS for the reason recorded on orchestrator work-item
       // bd-ib-bic7hb: mise's aqua backend would otherwise spend the factory's
       // App-installation rate-limit bucket on public release metadata).
       // This repo is a fleet member carrying livespec-dev-tooling, so the
@@ -372,6 +376,7 @@
       // commands the literals spelled.
       "prepare_toolchain": {
         "mise": ["sh", "-c", "mise trust && env -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_API_TOKEN mise install --quiet"],
+        "python_sync": ["uv", "sync", "--all-groups"],
         "lefthook": ["uv", "run", "lefthook", "install"]
       },
       "conformance": {
