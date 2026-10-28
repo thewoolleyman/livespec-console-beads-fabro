@@ -226,7 +226,13 @@ def main(argv: list[str]) -> int:
     if doc is None:
         return _fail("could not read the llvm-cov export; refusing to pass")
 
-    for failure in (_check_listing(listing_path), _check_lines(doc), _check_regions(doc)):
+    checks = (
+        lambda: _check_listing(listing_path),
+        lambda: _check_lines(doc),
+        lambda: _check_regions(doc),
+    )
+    for check in checks:
+        failure = check()
         if failure is not None:
             return failure
     return 0

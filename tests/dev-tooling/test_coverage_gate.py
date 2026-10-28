@@ -116,6 +116,15 @@ def test_lines_named_by_the_listing_fail_the_gate(
     assert "2 uncovered line(s) named by the listing" in err
 
 
+def test_a_failing_check_stops_the_later_checks_from_reporting_a_pass(
+    gate: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    listing = "Filename Regions\nUncovered Lines:\n: src/a.rs: 3\n"
+
+    assert run_gate(gate, tmp_path, export(region(1, 2, 3)), listing) == 1
+    assert "PASS" not in capsys.readouterr().out
+
+
 def test_a_listing_without_the_uncovered_header_names_nothing(
     gate: ModuleType, tmp_path: Path
 ) -> None:
