@@ -570,6 +570,8 @@ pub struct WorkItemDetail {
     pub item_type: Option<String>,
     /// The published plan parent id, when this work-item is a plan child.
     pub parent: Option<String>,
+    /// The plan slug the orchestrator publishes on a plan record, as emitted.
+    pub plan_slug: Option<String>,
     /// Labels published with the work-item record.
     pub labels: Vec<String>,
     /// How the item entered the ledger (`freeform`, `gap`, ...).
@@ -702,11 +704,12 @@ impl WorkItemDetail {
             .iter()
             .map(|label| length_prefixed(label))
             .collect::<String>();
-        let fields: [Option<&str>; 24] = [
+        let fields: [Option<&str>; 25] = [
             self.title.as_deref(),
             self.description.as_deref(),
             self.item_type.as_deref(),
             self.parent.as_deref(),
+            self.plan_slug.as_deref(),
             self.origin.as_deref(),
             self.gap_id.as_deref(),
             self.assignee.as_deref(),
@@ -3118,6 +3121,7 @@ pub fn parse_orchestrator_observation(
             description: record_text(&raw, "description"),
             item_type: record_text(&raw, "type"),
             parent: record_text(&raw, "parent"),
+            plan_slug: record_text(&raw, "plan_slug"),
             labels: record_strings(&raw, "labels"),
             origin: record_text(&raw, "origin"),
             gap_id: record_text(&raw, "gap_id"),

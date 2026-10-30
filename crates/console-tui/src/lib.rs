@@ -2618,13 +2618,14 @@ fn lane_item_summary(item: &LaneWorkItem) -> String {
 /// fields operators scan first: id, rank, status, and title.
 fn lane_item_detail_text(item: &LaneWorkItem) -> String {
     format!(
-        "{}  rank {}  [{}]{}{}  {}  repo {}{}",
+        "{}  rank {}  [{}]{}{}  {}{}  repo {}{}",
         item.work_item_id(),
         item.rank(),
         item.status(),
         lane_execution_state_suffix(item),
         lane_unconfirmed_suffix(item),
         lane_item_title(item),
+        lane_plan_column(item),
         item.repo(),
         lane_reason_suffix(item)
     )
@@ -2644,6 +2645,15 @@ const fn lane_unconfirmed_suffix(item: &LaneWorkItem) -> &'static str {
     } else {
         "  (unconfirmed)"
     }
+}
+
+/// The plan column of a lane row: `  plan <name>` for a planned item, and
+/// nothing at all for a plan-less one -- the ordinary case, which carries no
+/// flag, marker, or finding about the absence.
+fn lane_plan_column(item: &LaneWorkItem) -> String {
+    item.plan()
+        .map(|plan| format!("  plan {plan}"))
+        .unwrap_or_default()
 }
 
 /// The title rendered in lane rows, or a stable placeholder for legacy
@@ -3124,6 +3134,7 @@ fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
                 item.observation_confirmed(),
             ),
         ),
+        ("parent", optional_field(detail.parent.as_deref())),
         ("origin", optional_field(detail.origin.as_deref())),
         ("gap_id", optional_field(detail.gap_id.as_deref())),
         ("assignee", optional_field(detail.assignee.as_deref())),
@@ -11374,6 +11385,46 @@ mod tests {
             )
             .with_payload_json(payload),
         ]
+    }
+
+    #[test]
+    fn a_ready_lane_row_names_its_plan_by_published_slug_else_parent_id() {
+        let snapshot = |event_id: &str, id: &str, detail: &str| {
+            ConsoleEvent::fixture(event_id, EventType::WorkItemSnapshotObserved, "orchestrator")
+                .with_payload_json(format!(
+                    r#"{{"repo":"console","work_item_id":"{id}","lane":"ready","lane_reason":null,"rank":"a0","status":"ready","detail":{detail},"source_version":1}}"#
+                ))
+        };
+        let events = [
+            snapshot(
+                "evt_slug",
+                "plan-s",
+                r#"{"title":"Slugged","plan_slug":"alpha"}"#,
+            ),
+            snapshot("evt_kid", "kid-s", r#"{"title":"Kid S","parent":"plan-s"}"#),
+            snapshot(
+                "evt_bare",
+                "kid-b",
+                r#"{"title":"Kid B","parent":"plan-b"}"#,
+            ),
+            snapshot("evt_loose", "loose", r#"{"title":"Loose"}"#),
+        ];
+        let model = build_tui_model_for_state(
+            &events,
+            &TuiInteractionState::for_view(TuiView::Lanes, 0, TuiOverlay::None)
+                .with_lane_focus(LaneFocus::Lane(Lane::Ready))
+                .with_selected_lane_item_index(0),
+        );
+        let text = ok_render_text(render_to_text(&model, 200, 30));
+        let row = |id: &str| {
+            text.lines()
+                .find(|line| line.contains(id))
+                .unwrap_or_default()
+        };
+
+        assert!(row("kid-s").contains("plan alpha"));
+        assert!(row("kid-b").contains("plan plan-b"));
+        assert!(!row("loose").contains("plan"));
     }
 
     #[test]
