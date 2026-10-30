@@ -4438,6 +4438,7 @@ pub struct LaneWorkItem {
     acceptance_policy: AcceptancePolicy,
     observation_confirmed: bool,
     detail: WorkItemDetail,
+    parent_plan_slug: Option<String>,
 }
 
 impl LaneWorkItem {
@@ -4458,6 +4459,7 @@ impl LaneWorkItem {
             acceptance_policy: snapshot.acceptance_policy(),
             observation_confirmed,
             detail: snapshot.detail().clone(),
+            parent_plan_slug: None,
         }
     }
 
@@ -4497,6 +4499,16 @@ impl LaneWorkItem {
     /// work-item detail modal renders.
     pub const fn detail(&self) -> &WorkItemDetail {
         &self.detail
+    }
+
+    #[must_use]
+    /// The plan this item belongs to: the slug the parent's consumed record
+    /// publishes, else the parent id exactly as this item's record names it, or
+    /// `None` for the ordinary plan-less item.
+    pub fn plan(&self) -> Option<&str> {
+        self.parent_plan_slug
+            .as_deref()
+            .or(self.detail.parent.as_deref())
     }
 
     #[must_use]
@@ -5060,6 +5072,17 @@ pub fn project_lane_board(events: &[ConsoleEvent]) -> LaneBoard {
             snapshot.work_item_id().to_owned(),
             LaneWorkItem::from_snapshot(&snapshot, execution_state, observation_confirmed),
         );
+    }
+    let published_slugs: BTreeMap<String, String> = latest
+        .iter()
+        .filter_map(|(id, item)| Some((id.clone(), item.detail().plan_slug.clone()?)))
+        .collect();
+    for item in latest.values_mut() {
+        item.parent_plan_slug = item
+            .detail
+            .parent
+            .as_ref()
+            .and_then(|parent| published_slugs.get(parent).cloned());
     }
     let columns = Lane::all()
         .iter()
