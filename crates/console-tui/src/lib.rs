@@ -2618,13 +2618,14 @@ fn lane_item_summary(item: &LaneWorkItem) -> String {
 /// fields operators scan first: id, rank, status, and title.
 fn lane_item_detail_text(item: &LaneWorkItem) -> String {
     format!(
-        "{}  rank {}  [{}]{}{}  {}  repo {}{}",
+        "{}  rank {}  [{}]{}{}  {}{}  repo {}{}",
         item.work_item_id(),
         item.rank(),
         item.status(),
         lane_execution_state_suffix(item),
         lane_unconfirmed_suffix(item),
         lane_item_title(item),
+        lane_plan_column(item),
         item.repo(),
         lane_reason_suffix(item)
     )
@@ -2644,6 +2645,15 @@ const fn lane_unconfirmed_suffix(item: &LaneWorkItem) -> &'static str {
     } else {
         "  (unconfirmed)"
     }
+}
+
+/// The plan column of a lane row: `  plan <name>` for a planned item, and
+/// nothing at all for a plan-less one -- the ordinary case, which carries no
+/// flag, marker, or finding about the absence.
+fn lane_plan_column(item: &LaneWorkItem) -> String {
+    item.plan()
+        .map(|plan| format!("  plan {plan}"))
+        .unwrap_or_default()
 }
 
 /// The title rendered in lane rows, or a stable placeholder for legacy

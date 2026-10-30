@@ -4500,6 +4500,13 @@ impl LaneWorkItem {
     }
 
     #[must_use]
+    /// The plan this item belongs to, exactly as its consumed record names the
+    /// parent, or `None` for the ordinary plan-less item.
+    pub fn plan(&self) -> Option<&str> {
+        self.detail.parent.as_deref()
+    }
+
+    #[must_use]
     /// Return the work item id value.
     pub fn work_item_id(&self) -> &str {
         &self.work_item_id
