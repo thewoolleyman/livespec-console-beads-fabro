@@ -3134,6 +3134,7 @@ fn work_item_detail_lines(item: &LaneWorkItem) -> Vec<Line<'static>> {
                 item.observation_confirmed(),
             ),
         ),
+        ("parent", optional_field(detail.parent.as_deref())),
         ("origin", optional_field(detail.origin.as_deref())),
         ("gap_id", optional_field(detail.gap_id.as_deref())),
         ("assignee", optional_field(detail.assignee.as_deref())),
