@@ -183,6 +183,28 @@ documentation-only (in addition to `just check`).** It MUST include:
   `mutants.toml` path/regex filter for a whole untestable module or a
   permanently-ignored class such as `Debug` implementations.
 
+**Run supersession.** The merge-gate CI workflow MUST declare a
+concurrency group so that a new push to a pull-request branch cancels
+that branch's still-running run. For pull-request events the group
+MUST be keyed on the workflow and the pull-request ref with
+cancel-in-progress enabled, so that only same-branch runs supersede
+one another and a push to one pull request never cancels another's
+run. A superseded pull-request run has no consumer -- nothing reads
+its verdict -- so keeping it alive is pure load on the shared runner
+pool (measured 2026-09-02: five re-pushed pull requests kept their
+stale runs alive beside the new ones, put ~85 pods on the pool at
+once, and every e2e job flaked). Post-merge runs on the canonical
+branch are the evidence that the canonical branch is green -- the
+orchestrator's post-merge janitor consumes them -- and MUST NOT cancel
+or displace one another: the group for a canonical-branch push MUST
+be keyed on the commit SHA rather than the ref. Keying it on the ref
+would be wrong even with cancellation disabled, because the hosting
+service holds at most one pending run per group and replaces it, so
+three fast merges would silently drop the middle commit's run. The
+workflow file MUST record, in its header comment, the incident that
+motivates the group, so a future rewrite of the workflow cannot drop
+it as an unexplained line.
+
 **Code-neutral documentation lane -- CI on classified documentation-only
 pull requests and canonical-branch pushes.** CI MUST classify a change as
 code-neutral documentation-only only when every changed path is one of:
@@ -310,6 +332,7 @@ flowchart TB
   subgraph Merge["CI merge gate (per PR)"]
     Fuzz["fuzz >=60s/target, no new crash"]
     Mutants["mutants --in-diff, no unjustified survivor"]
+    Supersede["same-PR push cancels the stale run; master runs never cancelled"]
   end
 
   subgraph Night["nightly (canonical branch)"]
@@ -713,6 +736,7 @@ flowchart LR
   subgraph Merge["merge gate (per PR)"]
     Fuzz["fuzz >=60s/target, no new crash"]
     Mut["mutants --in-diff, no unjustified survivor"]
+    Sup["same-PR push cancels stale run; master runs kept"]
   end
   subgraph Night["nightly (canonical branch)"]
     Soak["fuzz soak + full mutation sweep"]
@@ -792,6 +816,21 @@ Feature: Cost-and-determinism split of the contributor quality gate
     And the orchestrator's own ledger normalization -- not this
       console -- later adopts the item into backlog and assigns it a
       real rank
+
+  Scenario: A new push to a pull-request branch supersedes its in-flight run
+    Given an open pull request whose merge-gate CI run is still in progress
+    When a second commit is pushed to that pull request's branch
+    Then the still-running run for that branch is cancelled
+    And the new push's run proceeds
+    And runs for other pull requests and for the canonical branch are
+      unaffected
+
+  Scenario: Consecutive canonical-branch pushes keep every post-merge run
+    Given two or more pull requests merged to the canonical branch in
+      quick succession
+    When their post-merge CI runs are created
+    Then no post-merge run is cancelled or displaced by a later one
+    And each merged commit's run completes and reports its own verdict
 ```
 
 ## Contributor Scenario D -- Behavioral coverage links every clause to a tested scenario

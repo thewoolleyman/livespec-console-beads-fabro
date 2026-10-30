@@ -348,6 +348,29 @@ Initial adapters:
   lifecycle design killed (design record: repo `thewoolleyman/livespec`,
   `plan/archive/work-item-state-machine/research/03-decision-log.md`,
   decisions 15/16).
+
+  **Plan reads.** Two further orchestrator reads serve the `Plans` view
+  and nothing else. The `context <plan_slug | work-item-id> --json`
+  envelope is read ON DEMAND for the selected roster row and carries the
+  record, its comments (handoff and scope entries), its children, its
+  dependency edges, its typed next action, and its research-directory
+  entry; the console renders the envelope as the drill-in and MUST NOT
+  re-derive any part of it from another read. The `list-plans --json`
+  surface is a pure directory enumeration -- it consults no ledger -- and
+  supplies exactly one attribute per plan: whether a `plan/<slug>/`
+  research directory exists. Both reads are owned by
+  `livespec-orchestrator-beads-fabro` and consumed verbatim under the
+  control-plane clause of `spec.md`.
+
+  **Plan-record fields.** The roster's plan identity (`plan_slug`), its
+  typed next action (`next_action` with `kind`, `ref`, `text`), the
+  session that last wrote it (`last_session`), its rank, and each child's
+  parent reference (`parent`) are fields of the orchestrator's published
+  `list-work-items --json` shape, consumed verbatim. Where the
+  orchestrator has not yet published one of them, the console MUST leave
+  that cell un-built -- rendered as explicitly absent -- rather than
+  derive it from comments, timestamps, or any other field, and the gap
+  MUST be tracked as an upstream dependency.
 - **LiveSpec adapter** -- reads spec-side `next`, doctor output,
   proposed changes, history, and filesystem/git state.
 - **GitHub adapter** -- reads PR, check, branch, and merge state.
@@ -418,6 +441,8 @@ flowchart TB
     Fabro["Fabro API / run events"]
     Dispatcher["Dispatcher journal JSONL"]
     WorkItems["orchestrator list-work-items --json"]
+    PlanContext["orchestrator context --json (on demand, per selected plan)"]
+    ListPlans["orchestrator list-plans --json (research-dir attribute)"]
     LiveSpec["/livespec next / doctor / files"]
     GitHub["PR / check / merge API"]
     NeedsAttention["orchestrator needs-attention --json"]
@@ -835,8 +860,11 @@ returns, rank-ordered -- and each row MUST show, from the consumed records
 alone, the plan's title, its
 typed next action (kind and text), the session that last wrote it and how
 long ago, its children's counts per lane, and the count of its children
-that are blocked on an upstream dependency; a field the orchestrator did
-not emit MUST render as explicitly absent rather than be computed or
+that are blocked on an upstream dependency. The two counts are COUNTS
+OVER THE CONSUMED CHILD RECORDS -- each child's published `lane`, and the
+`upstream dependency` marker defined in `spec.md` -- and nothing else; a
+SCALAR field the orchestrator did not emit MUST render as explicitly
+absent rather than be substituted from another field or
 omitted. Selecting a roster row MUST render that plan's drill-in in the
 detail pane from the orchestrator's `context` envelope -- the record, its
 handoff and scope timeline, its children, its dependency edges, and its
@@ -851,7 +879,8 @@ record names a parent -- by the parent's slug when the consumed records
 publish it, otherwise by the parent's id exactly as the record names it --
 and that column MUST be blank -- carrying no flag, marker, or finding --
 when the record names no parent. The console MUST NOT render the word
-"epic" in any human-facing string: a consumed record whose type is the
+"epic" in any human-facing string it presents -- in the TUI, and in every
+CLI usage, help, and report string: a consumed record whose type is the
 storage type `epic` is rendered as a plan, and its type field as `plan`.
 The console MUST NOT offer a second plan listing or plan drill-in outside
 the `Plans` view: the roster and its detail-pane drill-in are the one

@@ -355,7 +355,7 @@
       "crates/console-nightly-soak/tests/ssh_ingress.rs::an_unreachable_ssh_ingress_fails_the_nightly_loudly",
       "dev-tooling/check-docs-only-ci.py"
     ],
-    "reason": "Top-of-pyramid coverage for the v048 nightly soak filing clauses. The fingerprint rendering obligation is covered by the integration suite in crates/console-nightly-soak/tests/fingerprint.rs: fuzz_crash_fingerprints_match_the_ratified_grammar and surviving_mutant_fingerprints_match_the_ratified_grammar assert the ratified grammar ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ over both finding kinds including the adversarial identities the crate does not control (source paths with spaces and non-ASCII, operator strings longer than the whole fingerprint budget, line 0), and the_same_finding_renders_a_stable_fingerprint covers the stable-signature obligation the dedup key rests on. The filing path itself is covered by the unit tests in crates/console-nightly-soak/src/lib.rs: a_fuzz_finding_is_submitted_as_exactly_one_create_request proves a finding reaches the write ingress as exactly one single-verb create request carrying the fingerprint, rediscovering_a_finding_resubmits_the_same_fingerprint pins the host-side-suppression consequence -- the client resubmits the identical dedup key and never reads the ledger, so it holds no work-items database credential -- and a_request_line_carries_the_verb_the_fingerprint_and_both_encoded_fields pins the ratified request shape create <fingerprint> <base64url-title> [<base64url-body>]. The transport clauses are covered end to end by crates/console-nightly-soak/tests/ssh_ingress.rs, which drives the real binary against a fake ssh on PATH: the_nightly_files_a_finding_as_one_create_line_on_the_ssh_ingress asserts the exact single line the ci-writer forced command receives and that filing needs nothing but the SSH destination, and an_unreachable_ssh_ingress_fails_the_nightly_loudly covers the fail-closed obligation that a nightly which cannot reach the on-tailnet ingress fails rather than completing while filing nothing. The v051 coverage-metric clause (gap-ig6lofyo: the line metric MUST NOT be llvm-cov's own scalar-merged line summary) is enforced by the inner-loop gate itself rather than by a test in this list: `just check-coverage` runs dev-tooling/coverage-gate.py, which fails on any line or region left uncovered in the merged cross-instantiation views and never gates on llvm-cov's summary figure.",
+    "reason": "Top-of-pyramid coverage for the v048 nightly soak filing clauses. The fingerprint rendering obligation is covered by the integration suite in crates/console-nightly-soak/tests/fingerprint.rs: fuzz_crash_fingerprints_match_the_ratified_grammar and surviving_mutant_fingerprints_match_the_ratified_grammar assert the ratified grammar ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ over both finding kinds including the adversarial identities the crate does not control (source paths with spaces and non-ASCII, operator strings longer than the whole fingerprint budget, line 0), and the_same_finding_renders_a_stable_fingerprint covers the stable-signature obligation the dedup key rests on. The filing path itself is covered by the unit tests in crates/console-nightly-soak/src/lib.rs: a_fuzz_finding_is_submitted_as_exactly_one_create_request proves a finding reaches the write ingress as exactly one single-verb create request carrying the fingerprint, rediscovering_a_finding_resubmits_the_same_fingerprint pins the host-side-suppression consequence -- the client resubmits the identical dedup key and never reads the ledger, so it holds no work-items database credential -- and a_request_line_carries_the_verb_the_fingerprint_and_both_encoded_fields pins the ratified request shape create <fingerprint> <base64url-title> [<base64url-body>]. The transport clauses are covered end to end by crates/console-nightly-soak/tests/ssh_ingress.rs, which drives the real binary against a fake ssh on PATH: the_nightly_files_a_finding_as_one_create_line_on_the_ssh_ingress asserts the exact single line the ci-writer forced command receives and that filing needs nothing but the SSH destination, and an_unreachable_ssh_ingress_fails_the_nightly_loudly covers the fail-closed obligation that a nightly which cannot reach the on-tailnet ingress fails rather than completing while filing nothing. The v051 coverage-metric clause (gap-ig6lofyo: the line metric MUST NOT be llvm-cov's own scalar-merged line summary) is enforced by the inner-loop gate itself rather than by a test in this list: `just check-coverage` runs dev-tooling/coverage-gate.py, which fails on any line or region left uncovered in the merged cross-instantiation views and never gates on llvm-cov's summary figure. The v058 run-supersession clauses (gap-rwxvnwjz, gap-x2o7ji3f, gap-xhgntr67, gap-4dg5pqrv, gap-hmzz26a2: the merge-gate workflow declares a concurrency group keyed per pull-request ref with cancel-in-progress for pull-request events and per commit SHA for canonical-branch pushes, and its header comment records the motivating incident) are realized by the `concurrency:` block and header comment of .github/workflows/ci.yml, landed by livespec-console-beads-fabro-s3kwxt. No test in this list asserts that block yet; their verification today is the workflow configuration itself and the supersession behaviour observed on live pull-request runs.",
     "clauses": [
       {
         "gap_id": "gap-mupmnlf6",
@@ -507,6 +507,26 @@
       },
       {
         "gap_id": "gap-m6yzg6wu",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-rwxvnwjz",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-x2o7ji3f",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-xhgntr67",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-4dg5pqrv",
+        "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
+      },
+      {
+        "gap_id": "gap-hmzz26a2",
         "scenario": "Contributor Scenario C -- Quality gate enforces the inner and merge loops"
       }
     ]
@@ -1551,7 +1571,7 @@
     "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes",
     "scenario_file": "scenarios.md",
     "test": "crates/console-cli/tests/scenario_33_plans_roster.rs",
-    "reason": "Top-of-pyramid roster coverage for livespec-console-beads-fabro-zzs2ig: consumed work-item snapshots render each open epic as a rank-ordered plan row, count child lanes and upstream-dependency blocks through published parent and labels fields, leave unpublished cells explicitly absent, and never expose the storage word epic. The remaining Scenario 33 drill-in and scoped-lane work remains with its separately filed children; unpublished plan facts remain held on console proxy livespec-console-beads-fabro-pzbdbo.40 (orchestrator bd-ib-wi5b).",
+    "reason": "Top-of-pyramid roster coverage for livespec-console-beads-fabro-zzs2ig: consumed work-item snapshots render each open epic as a rank-ordered plan row, count child lanes and upstream-dependency blocks through published parent and labels fields, leave unpublished cells explicitly absent, and never expose the storage word epic. The remaining Scenario 33 drill-in and scoped-lane work remains with its separately filed children; unpublished plan facts remain held on console proxy livespec-console-beads-fabro-pzbdbo.40 (orchestrator bd-ib-wi5b). The v058 plans-view-consumption-contracts revision re-points the absent-scalar clause from gap-z3bfxje2 to gap-j7vmsvil (the line now distinguishes a COUNT over consumed child records, which the roster test exercises, from a SCALAR substituted from another field) and binds three new contracts.md Initial Adapters clauses here: gap-tmh23rb3 (the drill-in renders the `context` envelope and re-derives none of it), gap-qgyt3zta and gap-jlb3dzlj (an unpublished plan-record field stays un-built and the gap is tracked as an upstream dependency). The roster test covers the un-built-cell half; the drill-in clause is owed by livespec-console-beads-fabro-lndcrv, like gap-6ubrnmzb.",
     "work_item": "livespec-console-beads-fabro-adf4nu",
     "clauses": [
       {
@@ -1563,7 +1583,7 @@
         "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
       },
       {
-        "gap_id": "gap-z3bfxje2",
+        "gap_id": "gap-j7vmsvil",
         "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
       },
       {
@@ -1592,6 +1612,18 @@
       },
       {
         "gap_id": "gap-sywy4dpo",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-tmh23rb3",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-qgyt3zta",
+        "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
+      },
+      {
+        "gap_id": "gap-jlb3dzlj",
         "scenario": "Scenario 33 -- A plan is a first-class console concept: the roster, the drill-in, and the scoped lanes"
       }
     ]

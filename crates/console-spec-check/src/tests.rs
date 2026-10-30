@@ -277,12 +277,20 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // advances only through a committed re-sync), all carried by Contributor
     // Scenario K:
     // 292 normative clauses, 22/160/24/86.
+    // The v057 delegated-pre-push-gate revision adds 16 non-functional-
+    // requirements.md clauses, carried by Contributor Scenario L:
+    // 308 normative clauses, 22/160/24/102.
+    // The v058 bulk revision adds the non-functional-requirements.md run-
+    // supersession clauses (five, carried by Contributor Scenario C) and the
+    // contracts.md plan-read and plan-record-field clauses (three, carried by
+    // Scenario 33):
+    // 316 normative clauses, 22/163/24/107.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 22_usize),
-        ("contracts.md", 160),
+        ("contracts.md", 163),
         ("constraints.md", 24),
-        ("non-functional-requirements.md", 102),
+        ("non-functional-requirements.md", 107),
     ];
     let mut total = 0;
     for (file, want) in cases {
@@ -292,7 +300,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 308,
+        total, 316,
         "total normative clauses across the console spec"
     );
     Ok(())

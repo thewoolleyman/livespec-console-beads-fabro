@@ -440,19 +440,29 @@ needs-attention inbox, work card list, event timeline, or repo health view.
 
 **Plan** -- The optional tier above the work-item: one goal with its
 children, its typed next action, and its handoff timeline. A plan is the
-orchestrator's ledger record for it -- realized in the beads substrate as a
-record of the storage type `epic` carrying the `plan_slug` metadata the
-orchestrator's plan-identity contract requires -- and the console renders it
-under the word "plan" only; a `plan/<slug>/` research directory is an
-optional, write-once attribute the orchestrator's `list-plans` surface
-reports. A plan is a PARENT; a lane is a STATUS; a work-item may have both,
-either, or neither. A work-item with no parent plan is the ordinary case,
-not a finding.
+orchestrator's ledger record for it, identified by the `plan_slug` its
+plan-identity contract (repo `thewoolleyman/livespec-orchestrator-beads-fabro`,
+`SPECIFICATION/contracts.md`
+§"Plan identity: `plan_slug` and the `associated_work_item_id` anchor")
+publishes; that contract owns the storage realization, and the console
+renders the record under the word "plan" only; a `plan/<slug>/` research
+directory is an optional, write-once attribute the orchestrator's
+`list-plans` surface reports. A plan is a PARENT; a lane is a STATUS; a
+work-item may have both, either, or neither. A work-item with no parent
+plan is the ordinary case, not a finding.
 
 **Roster** -- The list of open plans -- plans whose consumed lane is not
 `done` -- the orchestrator's `list-work-items` surface returns,
-rank-ordered, each with the work state the surface publishes for it. The roster is rendered, never derived: the console does
-not enumerate plans from any raw ledger read.
+rank-ordered, each with the work state the surface publishes for it. The
+roster is rendered, never derived: the console does not enumerate plans
+from any raw ledger read.
+
+**Upstream dependency** -- A child work-item that sits in the consumed
+`blocked` lane and carries a consumed label of the form
+`upstream-dep:<tenant>`: the console's proxy for a dependency another
+repository owns. The console recognises it from those two consumed
+facts only and never infers one from a title, a description, or a
+dependency edge.
 
 **needs-attention item** -- A projection entry requiring human review or
 action, sourced from the product `needs-attention` snapshot the console

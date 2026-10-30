@@ -68,7 +68,11 @@
       "SPECIFICATION/contracts.md §\"Dispatcher loop invocation surface\"",
       "SPECIFICATION/contracts.md §\"Fail-closed cost gate (keyed on `--item` presence)\"",
       "SPECIFICATION/contracts.md §\"The skill surface\"",
-      "SPECIFICATION/contracts.md §\"A factory run never awaits a human\""
+      "SPECIFICATION/contracts.md §\"A factory run never awaits a human\"",
+      // Added with the plans-view-consumption-contracts revision: spec.md
+      // §Terminology "Plan" cites the plan-identity contract that owns the
+      // plan record's storage realization.
+      "SPECIFICATION/contracts.md §\"Plan identity: `plan_slug` and the `associated_work_item_id` anchor\""
     ],
     // Added 2026-10-20 with v054 `## Factory routing`, which cites the fleet
     // factory registry. BARE form on purpose: CI clones only the orchestrator

@@ -1374,7 +1374,8 @@ Scenario: The roster renders one row per open plan from the consumed records
   When the operator opens the Plans view
   Then the roster shows two rows in rank order
   And each row shows the plan's title, its next action kind and text, who last wrote it and how long ago, its children's counts per lane, and how many children are blocked on an upstream dependency
-  And no row shows a value the consumed records did not carry
+  And every count shown is a count of consumed child records by their published lane or upstream-dependency marker
+  And no row shows a scalar value the consumed records did not carry
 
 Scenario: Selecting a plan renders its drill-in from the context envelope
   Given a roster row for a plan whose context envelope carries a handoff entry, a scope event, three children, two dependency edges, and a typed next action
@@ -1412,7 +1413,7 @@ Scenario: A plan-less work-item is ordinary
 
 Scenario: The console never renders the storage word
   Given a consumed record whose type field is the storage type "epic"
-  When the console renders it anywhere a person reads -- the roster, the record surface, or a lane row
+  When the console renders it anywhere a person reads -- the roster, the record surface, a lane row, or a CLI usage, help, or report string
   Then the word rendered for it is "plan"
   And the string "epic" appears in no pane, hint, title, or message
 
@@ -1421,6 +1422,19 @@ Scenario: A roster field the orchestrator does not publish stays un-built
   When the roster renders that plan's row
   Then the last-session cell renders as explicitly absent
   And the console does not compute a substitute from comments, timestamps, or any other field
+
+Scenario: A finished plan leaves the roster
+  Given a plan record whose consumed lane is done
+  When the operator opens the Plans view
+  Then that plan has no roster row
+  And its children remain reachable in Lanes with their plan column filled
+
+Scenario: The drill-in and research attribute come from their own reads
+  Given a selected roster row
+  When the detail pane renders
+  Then its drill-in is the context envelope for that plan as the orchestrator returned it
+  And its research-directory attribute is the list-plans membership as the orchestrator returned it
+  And the console derives neither from the list-work-items records
 ```
 
 ## Scenario 34 -- A dispatch resolves its factory through the host's factory registry
