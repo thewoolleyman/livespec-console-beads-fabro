@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/thewoolleyman/livespec-console-beads-fabro/compare/v0.5.0...v0.6.0) (2026-10-31)
+
+
+### Features
+
+* **tui:** Lanes plan column names the parent plan, blank when plan-less ([71ed6a8](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/71ed6a86a384d86d6f3e7171b2ca49f62a63bf67))
+
 ## [0.5.0](https://github.com/thewoolleyman/livespec-console-beads-fabro/compare/v0.4.0...v0.5.0) (2026-10-30)
 
 
