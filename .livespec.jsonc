@@ -416,6 +416,7 @@
         "review_fix": 7200,
         "proof_capture": 3600
       },
+      "janitor": { "venue": "cluster_job" },
 
       // TEMPORARY: park the `pr` node on the Claude adapter, off Codex.
       //
