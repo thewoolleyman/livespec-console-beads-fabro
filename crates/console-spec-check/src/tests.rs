@@ -285,12 +285,17 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // contracts.md plan-read and plan-record-field clauses (three, carried by
     // Scenario 33):
     // 316 normative clauses, 22/163/24/107.
+    // The v059 python-helper-coverage-config revision adds two non-functional-
+    // requirements.md Quality Gate clauses (pyproject.toml governs every pytest
+    // coverage run; a bare `--cov` run ends with pytest's own status), carried by
+    // Contributor Scenario C:
+    // 318 normative clauses, 22/163/24/109.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 22_usize),
         ("contracts.md", 163),
         ("constraints.md", 24),
-        ("non-functional-requirements.md", 107),
+        ("non-functional-requirements.md", 109),
     ];
     let mut total = 0;
     for (file, want) in cases {
@@ -300,7 +305,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 316,
+        total, 318,
         "total normative clauses across the console spec"
     );
     Ok(())
