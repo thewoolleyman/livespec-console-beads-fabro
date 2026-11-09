@@ -156,6 +156,15 @@ on every push and pull request).** It MUST include:
 - property tests for pure logic and replay/projector behavior
 - dependency-audit checks: `cargo deny` (advisories, licenses, bans, sources) and `cargo machete` (unused-dependency detection)
 - architecture checks (see `## Constraints` -> Architecture Tests)
+- 100% line and branch coverage of every measured file of the Python
+  helper tree under `dev-tooling/`, measured by its pytest suite
+  (`check-per-file-coverage`). The coverage configuration in
+  `pyproject.toml` MUST govern every pytest coverage run in this
+  repository, whether or not the run names that configuration, so that
+  a run's branch data and the data its test subprocesses record always
+  combine. A run that is given `--cov` without `--cov-config` MUST end
+  with pytest's own exit status and a coverage report, never with a
+  failure to combine statement data with branch data.
 - the behavioral-coverage linkage check, once its checker lands (see
   Behavioral Coverage below)
 
@@ -763,6 +772,15 @@ Feature: Cost-and-determinism split of the contributor quality gate
     And it excludes fuzz and mutation runs
     And a code path that resists a meaningful unit test is redesigned
       rather than annotated with a coverage exclusion
+
+  Scenario: The Python helper tree's coverage combines under any pytest coverage spelling
+    Given pyproject.toml configures branch coverage for the dev-tooling helper tree
+    And a helper test starts a Python subprocess whose working directory has
+      no pyproject.toml in view
+    When pytest runs the helper suite with --cov and no --cov-config argument
+    Then the run ends with pytest's own exit status
+    And it prints a coverage report
+    And it does not fail combining statement coverage data with branch data
 
   Scenario: The merge gate adds fuzzing and diff-scoped mutation
     Given a code-bearing pull request
