@@ -172,6 +172,12 @@ exclude = ["**/__pycache__/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/dev-tooling"]
+# pytest-cov hands its test subprocesses the coverage config by path only when
+# --cov-config names an existing file; the bare spelling assumes a .coveragerc
+# that does not exist, so a subprocess with no pyproject in view measures
+# statements only and the combine step fails against the branch data. Inert
+# without --cov.
+addopts = ["--cov-config=pyproject.toml"]
 
 [tool.coverage.run]
 branch = true
