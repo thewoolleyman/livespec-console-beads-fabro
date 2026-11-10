@@ -7,11 +7,14 @@
 //! inventory. This console ratified that as `SPECIFICATION/constraints.md`
 //! §"Factory routing" (spec v054), carried by `SPECIFICATION/scenarios.md`
 //! §"Scenario 34 -- A dispatch resolves its factory through the host's factory
-//! registry", whose FIRST scenario is exactly what this file proves: the
-//! committed `dispatcher.factories` table declares one registry-backed entry
-//! named `petri`, no entry carries a `server` or `docker_host`
+//! registry", whose FIRST scenario is exactly what this file proves: every
+//! entry of the committed `dispatcher.factories` table declares
+//! `"registry": true`, no entry carries a `server` or `docker_host`
 //! value, and `dispatcher.default_factory` names `petri` (spec v056,
-//! coordinator ruling R668, the Petri-era cutover).
+//! coordinator ruling R668, the Petri-era cutover). The scenario sets no entry
+//! COUNT: a second registry-backed, never-default entry such as `candidate`
+//! (gmktec's fabro-server-candidate, chosen per dispatch) conforms
+//! (bd-ib-2mtdwn, coordinator legacy-coordinator-agent's ruling 2026-11-10).
 //! `legacy` was the default through spec v055, and was removed from the table on
 //! 2026-10-24 when its hp-xubuntu instance was retired (plan fabro-currency).
 //!
@@ -22,8 +25,8 @@
 //! name to -- but neither can say what this repository actually commits, which
 //! is the whole of the clause.
 //!
-//! The reading is split deliberately. The STRUCTURAL half -- exactly one
-//! entry, named `petri`, registry-backed -- goes through the production
+//! The reading is split deliberately. The STRUCTURAL half -- the default
+//! `petri` declared, every entry registry-backed -- goes through the production
 //! parser `parse_factory_servers`, so this test never re-implements the JSONC
 //! reader that module exists to own. The BYTE-LEVEL half -- that the table
 //! commits no `server` and no `docker_host` VALUE -- is read off the committed
@@ -96,10 +99,10 @@ fn committed_factories_declaration(committed: &str) -> Result<&str, String> {
     Err("the committed factories object is never closed".to_owned())
 }
 
-/// The committed `dispatcher.factories` table declares exactly the entry
-/// `petri`, registry-backed, and names no machine.
+/// The committed `dispatcher.factories` table declares the default `petri`,
+/// every entry is registry-backed, and no entry names a machine.
 #[test]
-fn the_committed_factory_table_declares_registry_backed_petri_alone() -> TestResult {
+fn the_committed_factory_table_is_registry_backed_and_declares_petri() -> TestResult {
     let committed = committed_config()?;
 
     // A registry that binds NOTHING, on purpose. A registry-backed entry then
@@ -109,12 +112,14 @@ fn the_committed_factory_table_declares_registry_backed_petri_alone() -> TestRes
     // running the suite happens to render.
     let factories = parse_factory_servers(&committed, &FactoryRegistry::default());
 
+    // Scenario 34 sets no entry count. The table must still declare the entry
+    // `dispatcher.default_factory` names, or a dispatch with no explicit factory
+    // would have nothing to resolve.
     let names: Vec<&str> = factories.iter().map(FactoryServer::name).collect();
-    assert_eq!(
-        names,
-        [PETRI],
-        "the committed dispatcher.factories table must declare exactly the \
-         entry {PETRI}"
+    assert!(
+        names.contains(&PETRI),
+        "the committed dispatcher.factories table must declare the default \
+         entry {PETRI}; got {names:?}"
     );
     for factory in &factories {
         let address = factory.address();
