@@ -322,6 +322,22 @@
           // rename (livespec-dev-tooling-s6go5s). Plan kubernetes-sandbox-backend
           // (bd-ib-nmuyjc). Rollback to Docker: set it back to `livespec-ci-rust`.
           "environment": "factory-python-rust"
+        },
+        // `candidate` is gmktec's fabro-server-candidate (:32278), the permanent
+        // mirror of `petri` (maintainer ruling 2026-11-02T19:22:32Z), declared
+        // here exactly as the orchestrator and livespec-dev-tooling declare it.
+        // Its address comes from the factory registry; `bin` is the client of
+        // the 0.393 build it serves. It is never the default: choose it per
+        // dispatch (LIVESPEC_FABRO_FACTORY=candidate), and count its runs
+        // against the shared gmktec fleet cap. Declared for the rust-lane image
+        // proof of bd-ib-2mtdwn (plan kubernetes-sandbox-backend, epic
+        // bd-ib-nmuyjc): the candidate's kubernetes-rust provider runs
+        // python-rust-agent-v1.188.1 before the fleet line moves.
+        "candidate": {
+          "registry": true,
+          "bin": "/home/ubuntu/.local/state/fabro-web-prod/v0393-bbe693847/fabro",
+          "secret_channel": "native_secrets",
+          "environment": "factory-python-rust"
         }
       },
       "default_factory": "petri",
