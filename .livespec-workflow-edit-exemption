@@ -1,2 +1,10 @@
-work_item=livespec-console-beads-fabro-qtvhwe
-reason=Add a top-level concurrency group to release-please.yml so concurrent master pushes queue instead of racing on a stale release base (2026-10-25 PRs 3619/3620).
+# Workflow-edit exemption — one exemption binds to one reviewed change.
+#
+# The change: one NEW file, .github/workflows/disarm-on-hold-label.yml, the
+# hold-label disarm workflow livespec core makes fleet policy, byte-identical to
+# livespec's root copy. It turns a pull request's auto-merge off when
+# do-not-merge is added to it. No existing workflow line is deleted or modified.
+work_item=livespec-console-beads-fabro-ypk7qi
+change=additive
+ci_runtime=no-significant-increase
+reason=ADDITIVE tier (approval:workflow-edit-additive under legacy-coordinator-agent's delegation, as for livespec-runtime-fcki27 and the other three members; also covered by the maintainer's 2026-11-03T15:00:49Z standing ruling; recorded on livespec-console-beads-fabro-ypk7qi). Adds the disarm workflow proposed for this repository's SPECIFICATION/non-functional-requirements.md (hold-label-disarm-inherits-core, citing livespec §"Shared content sync — copier template"). This repository's auto-enable-merge.yml mints with client-id:, the same input key as livespec's root copy, so the copy is byte-identical. It runs only on pull_request labeled events for do-not-merge (one short job), so CI runtime does not grow measurably. actionlint exit 0. Plan ci-runtime-and-cost (livespec-dev-tooling-ib3oe3).
