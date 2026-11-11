@@ -1726,5 +1726,18 @@
       }
     ],
     "work_item": "livespec-console-beads-fabro-3n5k7m"
+  },
+  {
+    "scenario": "Contributor Scenario M -- A hold label added to an armed pull request turns its auto-merge off",
+    "scenario_file": "non-functional-requirements.md",
+    "test": "TODO",
+    "reason": "Test tier: an integration test or above is owed for this heading, as a host-captured proof on the live forge. It must show that adding the do-not-merge label to a pull request whose rebase auto-merge the factory bot armed turns that auto-merge off, that removing the label re-arms it through auto-enable-merge.yml, and that an unlabelled pull request is still armed. GitHub Actions' handling of pull_request label events under the factory App token is a host-captured proof no factory sandbox can take. livespec-console-beads-fabro-ypk7qi owns it (the hold-label disarm carrier of plan ci-runtime-and-cost, epic livespec-dev-tooling-ib3oe3).",
+    "work_item": "livespec-console-beads-fabro-ypk7qi",
+    "clauses": [
+      {
+        "gap_id": "gap-ajl74sxc",
+        "scenario": "Contributor Scenario M -- A hold label added to an armed pull request turns its auto-merge off"
+      }
+    ]
   }
 ]
