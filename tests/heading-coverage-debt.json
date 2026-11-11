@@ -64,6 +64,13 @@
   },
   {
     "spec_root": "SPECIFICATION",
+    "spec_file": "non-functional-requirements.md",
+    "heading": "## Contributor Scenario M -- A hold label added to an armed pull request turns its auto-merge off",
+    "work_item": "livespec-console-beads-fabro-ypk7qi",
+    "first_seen": "2026-11-11"
+  },
+  {
+    "spec_root": "SPECIFICATION",
     "spec_file": "scenarios.md",
     "heading": "## Scenario 10 -- A per-item override beats the global default, except `wip_cap`",
     "work_item": "livespec-console-beads-fabro-y9hc",

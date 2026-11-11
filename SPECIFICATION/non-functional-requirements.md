@@ -627,6 +627,17 @@ livespec-dev-tooling §"Delegated pre-push gate". A sibling the gate
 App's installation does not cover MUST fail the delegated run as a
 no-verdict refusal naming that sibling, never as a pass.
 
+### Hold-Label Disarm
+
+Because this repository carries `.github/workflows/auto-enable-merge.yml`,
+it MUST also carry `.github/workflows/disarm-on-hold-label.yml`,
+byte-identical to livespec's root copy, which turns a pull request's
+auto-merge off when the `do-not-merge` label is added to it. The
+behaviour, and the rule that every fleet member carrying
+`auto-enable-merge.yml` carries it, are livespec's
+`non-functional-requirements.md`
+§"Shared content sync — copier template" and are not restated here.
+
 ## Scenarios
 
 The `##` H2 sections below are the contributor-facing behavioral
@@ -1182,4 +1193,19 @@ Scenario: A delegating host's push gates on the remote executor and refuses on n
   Then the pre-push path runs the delegation client instead of running `just check` on the pushing host
   And the push completes only on a passing verdict from the executor
   And the push is refused when the executor returns no verdict
+```
+
+## Contributor Scenario M -- A hold label added to an armed pull request turns its auto-merge off
+
+```gherkin
+Feature: A hold label disarms an armed pull request
+  As a LiveSpec maintainer holding a pull request
+  I want adding the do-not-merge label to turn the pull request's auto-merge off
+  So that a pull request the factory bot armed does not merge while it is held
+
+Scenario: A hold label added to an armed pull request turns its auto-merge off
+  Given a pull request in this repository whose auto-merge is armed
+  When the do-not-merge label is added to it
+  Then the disarm-on-hold-label workflow runs for that pull request
+  And the pull request's auto-merge is turned off
 ```

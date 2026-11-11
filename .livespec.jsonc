@@ -85,7 +85,10 @@
     // Added with the delegated pre-push gate subsection (plan
     // delegated-gate-fleet-rollout). BARE form for the same reason as above.
     "livespec": [
-      "§\"Enforcement-suite invocation\""
+      "§\"Enforcement-suite invocation\"",
+      // Added with the hold-label-disarm-inherits-core revision: the
+      // ### Hold-Label Disarm clause cites the fleet policy section. BARE form.
+      "§\"Shared content sync — copier template\""
     ]
   },
   "implementation": { "plugin": "livespec-orchestrator-beads-fabro" },
