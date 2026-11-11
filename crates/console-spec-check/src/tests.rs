@@ -290,12 +290,17 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
     // coverage run; a bare `--cov` run ends with pytest's own status), carried by
     // Contributor Scenario C:
     // 318 normative clauses, 22/163/24/109.
+    // The v060 hold-label-disarm-inherits-core revision adds one
+    // non-functional-requirements.md `### Hold-Label Disarm` clause (this
+    // repository carries disarm-on-hold-label.yml byte-identical to livespec's
+    // root copy), carried by Contributor Scenario M:
+    // 319 normative clauses, 22/163/24/110.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECIFICATION");
     let cases = [
         ("spec.md", 22_usize),
         ("contracts.md", 163),
         ("constraints.md", 24),
-        ("non-functional-requirements.md", 109),
+        ("non-functional-requirements.md", 110),
     ];
     let mut total = 0;
     for (file, want) in cases {
@@ -305,7 +310,7 @@ fn extract_rules_matches_real_spec_ground_truth() -> Result<(), Box<dyn std::err
         total += count;
     }
     assert_eq!(
-        total, 318,
+        total, 319,
         "total normative clauses across the console spec"
     );
     Ok(())
