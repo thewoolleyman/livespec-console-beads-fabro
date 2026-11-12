@@ -1,0 +1,40 @@
+# Canonical inventory for the `just check` aggregate.
+#
+# Each entry is classified from the inputs that can change its verdict. The
+# green token may memoize only tree-pure entries; checks that read the host,
+# environment, git range, ledger, or installed plugin state remain
+# world-reading.
+check-format  # purity: world-reading
+check-clippy  # purity: world-reading
+check-nextest  # purity: world-reading
+# Reads the installed llvm-cov tooling and rustup components.
+check-coverage  # purity: world-reading
+check-deps  # purity: world-reading
+check-arch  # purity: world-reading
+# Its severity lever is an environment input.
+check-behavior-coverage  # purity: world-reading
+check-heading-coverage-debt-register  # purity: tree-pure
+# Reads the working branch's git range and an optional severity environment value.
+check-spec-fenced-block-staleness  # purity: world-reading
+check-completeness  # purity: world-reading
+check-spec-governance-default-block  # purity: world-reading
+check-charters  # purity: world-reading
+# Verifies the installed shared hook under the worktree's git common directory.
+check-baseline  # purity: world-reading
+check-shell-quality  # purity: tree-pure
+# Reads the worktree/range and ledger-backed workflow-edit authorization.
+check-no-workflow-edits  # purity: world-reading
+check-plan-no-tombstone  # purity: tree-pure
+check-plan-record-conformance  # purity: world-reading
+check-plan-anchor-declared  # purity: tree-pure
+check-plugin-resolution  # purity: world-reading
+# Resolves the core plugin from the host plugin cache or an environment override.
+check-doctor-static  # purity: world-reading
+# Drives a real host tmux server and release binary.
+check-e2e-tmux  # purity: world-reading
+check-real-store-smoke  # purity: world-reading
+check-ci-parity  # purity: world-reading
+check-docs-only-ci  # purity: world-reading
+# Requires HOME to resolve the installed-plugin currency report.
+check-fork-drift  # purity: world-reading
+check-red-green-replay  # purity: world-reading

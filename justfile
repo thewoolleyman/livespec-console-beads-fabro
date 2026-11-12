@@ -284,6 +284,29 @@ check:
         check-fork-drift
         check-red-green-replay
     )
+    # The purity resolver reads repository-private declarations from this
+    # inventory. Keep its ordered membership identical to the dispatched list:
+    # auditing a stale subset would leave a member outside the green token's
+    # accounting.
+    if [ ! -f check-targets.txt ]; then
+        echo "check aggregate purity inventory missing: check-targets.txt" >&2
+        exit 1
+    fi
+    mapfile -t inventory_targets < <(
+        sed -n -E 's/[[:space:]]*#.*$//; s/^[[:space:]]*(check-[a-z0-9-]+)[[:space:]]*$/\1/p' check-targets.txt
+    )
+    if [ "${targets[*]}" != "${inventory_targets[*]}" ]; then
+        echo "check aggregate purity inventory diverges from the dispatched target list" >&2
+        echo "justfile: ${targets[*]}" >&2
+        echo "check-targets.txt: ${inventory_targets[*]}" >&2
+        exit 1
+    fi
+    # An undeclared member is conservatively world-reading, but that safe
+    # fallback would quietly erase the token's saving. Refuse before any member
+    # runs, naming each missing declaration for the owner to classify.
+    if ! uv run python -m livespec_dev_tooling.green_token undeclared "${targets[@]}"; then
+        exit 1
+    fi
     # `SKIP_TARGETS` is the fleet's recognised skip contract, the one livespec's
     # `check` recipe reads too. The delegated gate client exports the members
     # that read authority held outside the tree into it, so the gate Job leaves
