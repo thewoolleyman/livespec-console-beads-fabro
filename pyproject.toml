@@ -66,6 +66,27 @@ plan_lifecycle_anchor = true
 delegated_gate = true
 
 # ---------------------------------------------------------------------------
+# Canonical-check wiring (livespec-console-beads-fabro-wzrct7; livespec-dev-
+# tooling SPECIFICATION/contracts.md "Shared check inventory", ratified v099).
+# The `just check` aggregate selects every canonical slug at this repo's pin
+# except the two waived below; each waiver's reason is recorded on wzrct7.
+# ---------------------------------------------------------------------------
+canonical_check_waivers = [
+    { slug = "check-heading-coverage", reason = "This repo's tests/heading-coverage.json is scenario-keyed and owned by its own Rust check-behavior-coverage (crates/console-spec-check: clause -> scenario -> test), which the `just check` aggregate and CI run; the shared heading-keyed check reads that registry in a shape it was not written in. Waiver ratified in livespec-dev-tooling v099 for exactly this repo." },
+    { slug = "check-ci-single-container-image", reason = "check-fuzz needs the python-rust-fuzz image (nightly toolchain with -Zsanitizer=address and cargo-fuzz), which the stable python-rust image every other ci.yml job uses does not carry, so ci.yml declares two job images by necessity. Recorded on livespec-console-beads-fabro-wzrct7; revisit when one image carries both toolchains." },
+]
+# A test that genuinely needs a real child pytest: it exercises pytest-cov's
+# combine step in a throwaway project, which no in-process main() call can
+# reproduce. It already scrubs COV_CORE_*, COVERAGE_* and PYTEST_* from the
+# child environment (tests/dev-tooling/test_pytest_cov_combine.py, run_pytest).
+subprocess_spawn_allowlist = [
+    "tests/dev-tooling/test_pytest_cov_combine.py",
+]
+repo_local_ci_skips = [
+    { slug = "check-no-workflow-edits", reason = "Local and janitor authorship control: it reads a workflow-edit authorization held in the beads ledger, which CI holds no credential for, and the canonical guard exits without evaluation under GITHUB_ACTIONS because CI has no local author to control. Same declaration as livespec-driver-claude." },
+]
+
+# ---------------------------------------------------------------------------
 # Role-key declarations (fleet row `required-role-keys-declared`, sibling row
 # `role-key-spellings`; livespec-console-beads-fabro-jzi3).
 #

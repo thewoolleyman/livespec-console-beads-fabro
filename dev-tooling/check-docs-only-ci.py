@@ -128,6 +128,8 @@ def check_lane_verifier() -> None:
         assert verify_lane("false", ALL_SUCCESS, classifier=bad_classifier) != 0
     for bad_doctor in ("failure", "cancelled", "skipped"):
         assert verify_lane("false", ALL_SUCCESS, doctor=bad_doctor) != 0
+    for bad_metadata in ("failure", "cancelled", "skipped"):
+        assert verify_lane("true", ALL_SKIPPED, metadata=bad_metadata) != 0
     for index in range(5):
         for bad_result in ("failure", "cancelled", "skipped"):
             results: list[str] = list(ALL_SUCCESS)

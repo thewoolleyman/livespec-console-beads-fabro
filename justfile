@@ -257,32 +257,102 @@ check:
     # aggregate does not run both harnesses serially. Coverage remains a separate
     # instrumented pass because llvm-cov needs its own profile and profdata.
     targets=(
+        # livespec-dev-tooling's canonical check inventory FIRST, every slug at
+        # this repo's pin in alphabetical order (check-aggregate-completeness
+        # allows extras only after it), minus the two waived in pyproject.toml
+        # canonical_check_waivers (livespec-console-beads-fabro-wzrct7).
+        check-agents-ai-references-resolve
+        check-aggregate-completeness
+        check-all-declared
+        check-assert-never-exhaustiveness
+        check-branch-protection-alignment
+        check-canonical-recipe-fidelity
+        check-check-coverage-incremental
+        check-check-mutation
+        check-check-tools
+        check-ci-gate-parity
+        check-ci-matrix-completeness
+        check-claude-md-coverage
+        check-codex-hook-reconcilable
+        check-comment-line-anchors
+        check-commit-pairs-source-and-test
+        check-delegated-gate-check-suite
+        check-delegated-job-authority-skip
+        check-file-lloc
+        check-fleet-marketplace-relative-sources
+        check-global-writes
+        check-handoff-dispatch-routing
+        check-heading-coverage-debt-register
+        check-hook-trees-not-io-exempt
+        check-keyword-only-args
+        check-local-memory-drift-audit
+        check-main-guard
+        check-marketplace-ref-release-only
+        check-master-ci-green
+        check-match-keyword-only
+        check-newtype-domain-primitives
+        check-no-direct-destructive-cli
+        check-no-direct-tool-invocation
+        check-no-except-outside-io
+        check-no-fmt-directives
+        check-no-inheritance
+        check-no-lloc-soft-warnings
+        check-no-raise-outside-io
+        check-no-shadow-ledger-body-identical
+        check-no-shadow-ledger-body-typechecks
+        check-no-todo-registry
+        check-no-write-direct
+        check-partition-completeness
+        check-pbt-coverage-pure-modules
+        check-per-file-coverage
+        check-plan-anchor-declared
+        check-plan-epic-parity
+        check-plan-no-live-handoff-file
+        check-plan-no-tombstone
+        check-plan-record-conformance
+        check-plugin-resolution
+        check-primary-checkout-commit-refuse-hook-installed
+        check-private-calls
+        check-public-api-result-typed
+        check-red-green-replay
+        check-required-role-keys-declared
+        check-rop-pipeline-shape
+        check-rule-26-keep-out
+        check-self-hosted-routing
+        check-self-hosted-uv-lane
+        check-shell-quality
+        check-skill-invocation-paths
+        check-source-trees-scoped-to-consumer
+        check-supervisor-discipline
+        check-tests-mirror-pairing
+        check-tests-no-subprocess-spawn
+        check-tool-backed-check-completeness
+        check-vendor-manifest
+        check-work-item-interpolation-delimiters
+        check-work-item-status-vocabulary
+        check-wrapper-shape
+        # Repository-local gates (Rust workspace, spec and CI-shape checks).
         check-format
         check-clippy
         check-nextest
         check-coverage
         check-deps
+        check-lint
+        check-types
         check-arch
         check-behavior-coverage
-        check-heading-coverage-debt-register
         check-spec-fenced-block-staleness
         check-completeness
         check-spec-governance-default-block
         check-charters
         check-baseline
-        check-shell-quality
         check-no-workflow-edits
-        check-plan-no-tombstone
-        check-plan-record-conformance
-        check-plan-anchor-declared
-        check-plugin-resolution
         check-doctor-static
         check-e2e-tmux
         check-real-store-smoke
         check-ci-parity
         check-docs-only-ci
         check-fork-drift
-        check-red-green-replay
     )
     # `SKIP_TARGETS` is the fleet's recognised skip contract, the one livespec's
     # `check` recipe reads too. The delegated gate client exports the members
@@ -622,8 +692,18 @@ check-shell-quality:
 check-fork-drift:
     cargo run --quiet --package console-fork-drift-check
 
+# Two checkers, both required (livespec-console-beads-fabro-wzrct7): this repo's
+# Rust-native checker, which owns the Rust product's Red-Green-Replay evidence,
+# and the shared livespec-dev-tooling module, which check-canonical-recipe-
+# fidelity requires every canonical recipe to invoke.
+# errexit is deliberately omitted so both checkers run; either failure fails it.
 check-red-green-replay:
-    cargo run --quiet --package console-red-green-replay-check
+    #!/usr/bin/env bash
+    set -uo pipefail
+    status=0
+    cargo run --quiet --package console-red-green-replay-check || status=1
+    uv run python -m livespec_dev_tooling.checks.red_green_replay || status=1
+    exit "$status"
 
 # UPSTREAM-DEPENDENCY GATE (livespec-console-beads-fabro-pzbdbo.1; maintainer
 # ruling 2026-09-02 — see AGENTS.md "Upstream-dependency proxies" and
@@ -933,3 +1013,201 @@ nightly-soak:
     fi
 
     echo "=== nightly-soak: complete (every finding filed through the write ingress) ==="
+
+# ---------------------------------------------------------------------------
+# Canonical livespec-dev-tooling checks wired by livespec-console-beads-fabro-
+# wzrct7: each recipe invokes the pinned shared module verbatim
+# (check-canonical-recipe-fidelity).
+# ---------------------------------------------------------------------------
+
+check-agents-ai-references-resolve:
+    uv run python -m livespec_dev_tooling.checks.agents_ai_references_resolve
+
+check-aggregate-completeness:
+    uv run python -m livespec_dev_tooling.checks.aggregate_completeness
+
+check-all-declared:
+    uv run python -m livespec_dev_tooling.checks.all_declared
+
+check-assert-never-exhaustiveness:
+    uv run python -m livespec_dev_tooling.checks.assert_never_exhaustiveness
+
+check-branch-protection-alignment:
+    uv run python -m livespec_dev_tooling.checks.branch_protection_alignment
+
+check-canonical-recipe-fidelity:
+    uv run python -m livespec_dev_tooling.checks.canonical_recipe_fidelity
+
+check-check-coverage-incremental:
+    uv run python -m livespec_dev_tooling.checks.check_coverage_incremental
+
+check-check-mutation:
+    uv run python -m livespec_dev_tooling.checks.check_mutation
+
+check-check-tools:
+    uv run python -m livespec_dev_tooling.checks.check_tools
+
+check-ci-gate-parity:
+    uv run python -m livespec_dev_tooling.checks.ci_gate_parity
+
+check-ci-matrix-completeness:
+    uv run python -m livespec_dev_tooling.checks.ci_matrix_completeness
+
+check-claude-md-coverage:
+    uv run python -m livespec_dev_tooling.checks.claude_md_coverage
+
+check-codex-hook-reconcilable:
+    uv run python -m livespec_dev_tooling.checks.codex_hook_reconcilable
+
+check-comment-line-anchors:
+    uv run python -m livespec_dev_tooling.checks.comment_line_anchors
+
+check-commit-pairs-source-and-test:
+    uv run python -m livespec_dev_tooling.checks.commit_pairs_source_and_test
+
+check-delegated-gate-check-suite:
+    uv run python -m livespec_dev_tooling.checks.delegated_gate_check_suite
+
+check-delegated-job-authority-skip:
+    uv run python -m livespec_dev_tooling.checks.delegated_job_authority_skip
+
+check-fleet-marketplace-relative-sources:
+    uv run python -m livespec_dev_tooling.checks.fleet_marketplace_relative_sources
+
+check-global-writes:
+    uv run python -m livespec_dev_tooling.checks.global_writes
+
+check-handoff-dispatch-routing:
+    uv run python -m livespec_dev_tooling.checks.handoff_dispatch_routing
+
+check-hook-trees-not-io-exempt:
+    uv run python -m livespec_dev_tooling.checks.hook_trees_not_io_exempt
+
+check-keyword-only-args:
+    uv run python -m livespec_dev_tooling.checks.keyword_only_args
+
+check-local-memory-drift-audit:
+    uv run python -m livespec_dev_tooling.checks.local_memory_drift_audit
+
+check-main-guard:
+    uv run python -m livespec_dev_tooling.checks.main_guard
+
+check-marketplace-ref-release-only:
+    uv run python -m livespec_dev_tooling.checks.marketplace_ref_release_only
+
+check-master-ci-green:
+    uv run python -m livespec_dev_tooling.checks.master_ci_green
+
+check-match-keyword-only:
+    uv run python -m livespec_dev_tooling.checks.match_keyword_only
+
+check-newtype-domain-primitives:
+    uv run python -m livespec_dev_tooling.checks.newtype_domain_primitives
+
+check-no-direct-destructive-cli:
+    uv run python -m livespec_dev_tooling.checks.no_direct_destructive_cli
+
+check-no-direct-tool-invocation:
+    uv run python -m livespec_dev_tooling.checks.no_direct_tool_invocation
+
+check-no-except-outside-io:
+    uv run python -m livespec_dev_tooling.checks.no_except_outside_io
+
+check-no-fmt-directives:
+    uv run python -m livespec_dev_tooling.checks.no_fmt_directives
+
+check-no-inheritance:
+    uv run python -m livespec_dev_tooling.checks.no_inheritance
+
+check-no-lloc-soft-warnings:
+    uv run python -m livespec_dev_tooling.checks.no_lloc_soft_warnings
+
+check-no-raise-outside-io:
+    uv run python -m livespec_dev_tooling.checks.no_raise_outside_io
+
+check-no-shadow-ledger-body-identical:
+    uv run python -m livespec_dev_tooling.checks.no_shadow_ledger_body_identical
+
+check-no-shadow-ledger-body-typechecks:
+    uv run python -m livespec_dev_tooling.checks.no_shadow_ledger_body_typechecks
+
+check-no-todo-registry:
+    uv run python -m livespec_dev_tooling.checks.no_todo_registry
+
+check-no-write-direct:
+    uv run python -m livespec_dev_tooling.checks.no_write_direct
+
+check-partition-completeness:
+    uv run python -m livespec_dev_tooling.checks.partition_completeness
+
+check-pbt-coverage-pure-modules:
+    uv run python -m livespec_dev_tooling.checks.pbt_coverage_pure_modules
+
+check-plan-epic-parity:
+    uv run python -m livespec_dev_tooling.checks.plan_epic_parity
+
+check-plan-no-live-handoff-file:
+    uv run python -m livespec_dev_tooling.checks.plan_no_live_handoff_file
+
+check-primary-checkout-commit-refuse-hook-installed:
+    uv run python -m livespec_dev_tooling.checks.primary_checkout_commit_refuse_hook_installed
+
+check-private-calls:
+    uv run python -m livespec_dev_tooling.checks.private_calls
+
+check-public-api-result-typed:
+    uv run python -m livespec_dev_tooling.checks.public_api_result_typed
+
+check-required-role-keys-declared:
+    uv run python -m livespec_dev_tooling.checks.required_role_keys_declared
+
+check-rop-pipeline-shape:
+    uv run python -m livespec_dev_tooling.checks.rop_pipeline_shape
+
+check-rule-26-keep-out:
+    uv run python -m livespec_dev_tooling.checks.rule_26_keep_out
+
+check-self-hosted-routing:
+    uv run python -m livespec_dev_tooling.checks.self_hosted_routing
+
+check-self-hosted-uv-lane:
+    uv run python -m livespec_dev_tooling.checks.self_hosted_uv_lane
+
+check-skill-invocation-paths:
+    uv run python -m livespec_dev_tooling.checks.skill_invocation_paths
+
+check-source-trees-scoped-to-consumer:
+    uv run python -m livespec_dev_tooling.checks.source_trees_scoped_to_consumer
+
+check-supervisor-discipline:
+    uv run python -m livespec_dev_tooling.checks.supervisor_discipline
+
+check-tests-mirror-pairing:
+    uv run python -m livespec_dev_tooling.checks.tests_mirror_pairing
+
+check-tests-no-subprocess-spawn:
+    uv run python -m livespec_dev_tooling.checks.tests_no_subprocess_spawn
+
+check-tool-backed-check-completeness:
+    uv run python -m livespec_dev_tooling.checks.tool_backed_check_completeness
+
+check-vendor-manifest:
+    uv run python -m livespec_dev_tooling.checks.vendor_manifest
+
+check-work-item-interpolation-delimiters:
+    uv run python -m livespec_dev_tooling.checks.work_item_interpolation_delimiters
+
+check-work-item-status-vocabulary:
+    uv run python -m livespec_dev_tooling.checks.work_item_status_vocabulary
+
+check-wrapper-shape:
+    uv run python -m livespec_dev_tooling.checks.wrapper_shape
+
+# Waived from the `just check` aggregate (pyproject.toml canonical_check_waivers),
+# but check-canonical-recipe-fidelity still requires every canonical slug to have
+# a recipe that invokes the shared module, so each stays runnable by hand.
+check-ci-single-container-image:
+    uv run python -m livespec_dev_tooling.checks.ci_single_container_image
+
+check-heading-coverage:
+    uv run python -m livespec_dev_tooling.checks.heading_coverage
