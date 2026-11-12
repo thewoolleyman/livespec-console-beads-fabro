@@ -62,6 +62,9 @@ def assert_workflow_wiring() -> None:
     lightweight = workflow_job(workflow, "check-doctor-static")
     assert "needs: classify-changes" in lightweight
     assert "if: ${{ !cancelled() }}" in lightweight
+    batch = workflow_job(workflow, "check-metadata-batch")
+    assert "needs: classify-changes" in batch
+    assert "if: ${{ !cancelled() }}" in batch
     for recipe in (
         "check-doctor-static",
         "check-charters",
@@ -75,6 +78,7 @@ def assert_workflow_wiring() -> None:
     for job_id in (
         "classify-changes",
         "check",
+        "check-metadata-batch",
         "check-doctor-static",
         "check-e2e-tmux",
         "check-real-store-smoke",
@@ -84,6 +88,7 @@ def assert_workflow_wiring() -> None:
         assert job_id in aggregate, f"ci-green does not account for {job_id}"
     assert "required_result classify-changes" in aggregate
     assert "required_result check-doctor-static" in aggregate
+    assert "required_result check-metadata-batch" in aggregate
     for job_id in (
         "check",
         "check-e2e-tmux",
@@ -105,6 +110,7 @@ def verify_lane(
     *,
     classifier: str = "success",
     doctor: str = "success",
+    metadata: str = "success",
 ) -> int:
     assert len(expected) == 5
     env = os.environ.copy()
@@ -114,6 +120,7 @@ def verify_lane(
             "DOCS_ONLY": docs_only,
             "CHECK_RESULT": expected[0],
             "DOCTOR_RESULT": doctor,
+            "METADATA_RESULT": metadata,
             "E2E_RESULT": expected[1],
             "REAL_STORE_RESULT": expected[2],
             "MUTANTS_RESULT": expected[3],

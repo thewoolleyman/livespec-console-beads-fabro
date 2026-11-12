@@ -14,12 +14,12 @@
     {
       "name": "check-ci-parity",
       "present_in_ci": false,
-      "reason": "This is the janitor/local aggregate guard introduced by livespec-console-beads-fabro-ccycuk. It reads CI's committed workflow but this factory slice may not edit .github/workflows/ to add a new CI job."
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
     },
     {
       "name": "check-fork-drift",
       "present_in_ci": false,
-      "reason": "Runs in the janitor/local aggregate because its upstream lane depends on installed orchestrator plugin state that CI does not provision; the gate itself prints a loud skip when that lane cannot resolve."
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
     },
     {
       "name": "check-fuzz",
@@ -29,17 +29,17 @@
     {
       "name": "check-heading-coverage-debt-register",
       "present_in_ci": false,
-      "reason": "Shrink-only heading-coverage debt ratchet, armed in the janitor/local aggregate by livespec-console-beads-fabro-2zurwc. It belongs in the CI check matrix too — the gate is tree-pure and needs no secret — but this factory slice may not edit .github/workflows/ to add the matching matrix target, so the one-line addition was reported for maintainer-side landing. Delete this entry when that CI target lands."
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
     },
     {
       "name": "check-mutants",
       "present_in_just_check": false,
-      "reason": "Merge-gate mutation run (livespec-console-beads-fabro-txtzn5.10). Deliberately absent from the `just check` aggregate: SPECIFICATION/non-functional-requirements.md ratifies that `just check` MUST NOT include mutation runs. It also cannot run there \u2014 it needs a base ref to diff against, which a local aggregate invocation has no way to supply."
+      "reason": "Merge-gate mutation run (livespec-console-beads-fabro-txtzn5.10). Deliberately absent from the `just check` aggregate: SPECIFICATION/non-functional-requirements.md ratifies that `just check` MUST NOT include mutation runs. It also cannot run there — it needs a base ref to diff against, which a local aggregate invocation has no way to supply."
     },
     {
       "name": "check-no-workflow-edits",
       "present_in_ci": false,
-      "reason": "Runs in the janitor/local aggregate only, BY DESIGN (livespec-dev-tooling-fy02): the pack body dev-tooling/check-no-workflow-edits.sh is an authorship control at the agent boundary and is a deliberate no-op when GITHUB_ACTIONS is set \u2014 CI has no local author to control, and the fleet's bot lanes (pin bumps, the canonical-slug reconciler, release-please) legitimately rewrite workflow files there. Master is protected by PR gate \u2261 master gate, which this guard neither weakens nor strengthens, so a CI job would be vacuous rather than merely un-added."
+      "reason": "Runs in the janitor/local aggregate only, BY DESIGN (livespec-dev-tooling-fy02): the pack body dev-tooling/check-no-workflow-edits.sh is an authorship control at the agent boundary and is a deliberate no-op when GITHUB_ACTIONS is set — CI has no local author to control, and the fleet's bot lanes (pin bumps, the canonical-slug reconciler, release-please) legitimately rewrite workflow files there. Master is protected by PR gate ≡ master gate, which this guard neither weakens nor strengthens, so a CI job would be vacuous rather than merely un-added."
     },
     {
       "name": "check-plan-anchor-declared",
@@ -49,17 +49,17 @@
     {
       "name": "check-red-green-replay",
       "present_in_ci": false,
-      "reason": "Runs in the janitor/local aggregate to validate origin/master..HEAD Rust commits before Stage 3 commit-msg enforcement; this factory slice may not edit .github/workflows/ to add a new CI job."
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
     },
     {
       "name": "check-spec-fenced-block-staleness",
       "present_in_ci": false,
-      "reason": "Fenced-block staleness gate (livespec-console-beads-fabro-4jb3kl.6), the same shape as check-red-green-replay above: it diffs the working tree against the merge base with origin/master, and the matrix job's shared actions/checkout runs at the default fetch-depth 1, where neither that ref nor any history exists — the gate would resolve no base and skip, so a CI job would be vacuous until the checkout fetches history for every target. It runs where the diff is real: the lefthook pre-push aggregate and the post-merge janitor. This factory slice also may not edit .github/workflows/."
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
     },
     {
       "name": "check-spec-governance-default-block",
       "present_in_ci": false,
-      "reason": "Runs in the janitor/local aggregate as a hermetic spec-governance guard; CI's matrix predates this target and this factory slice may not edit .github/workflows/ to add a new CI job."
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
     },
     {
       "name": "ci-green",
@@ -75,6 +75,326 @@
       "name": "check-plan-record-conformance",
       "present_in_ci": false,
       "reason": "Plan-record conformance (dev-tooling >= 1.52) reads this tenant's beads ledger, which CI cannot reach (no tenant secret in CI), and it self-skips unless LIVESPEC_RUN_PLAN_RECORD_CONFORMANCE is set; it runs armed by hand under the credential wrapper and, once the tenant is clean, in the host-side aggregate (orchestrator plan arm-plan-record-conformance, console item livespec-console-beads-fabro-pzbdbo.16)."
+    },
+    {
+      "name": "check-agents-ai-references-resolve",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-aggregate-completeness",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-all-declared",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-assert-never-exhaustiveness",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-branch-protection-alignment",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-canonical-recipe-fidelity",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-check-coverage-incremental",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-check-mutation",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-check-tools",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-ci-gate-parity",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-ci-matrix-completeness",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-claude-md-coverage",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-codex-hook-reconcilable",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-comment-line-anchors",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-commit-pairs-source-and-test",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-delegated-gate-check-suite",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-delegated-job-authority-skip",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-file-lloc",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-fleet-marketplace-relative-sources",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-global-writes",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-handoff-dispatch-routing",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-hook-trees-not-io-exempt",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-keyword-only-args",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-local-memory-drift-audit",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-main-guard",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-marketplace-ref-release-only",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-master-ci-green",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-match-keyword-only",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-newtype-domain-primitives",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-no-direct-destructive-cli",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-no-direct-tool-invocation",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-no-except-outside-io",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-no-fmt-directives",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-no-inheritance",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-no-lloc-soft-warnings",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-no-raise-outside-io",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-no-shadow-ledger-body-identical",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-no-shadow-ledger-body-typechecks",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-no-todo-registry",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-no-write-direct",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-partition-completeness",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-pbt-coverage-pure-modules",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-per-file-coverage",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-plan-epic-parity",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-plan-no-live-handoff-file",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-primary-checkout-commit-refuse-hook-installed",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-private-calls",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-public-api-result-typed",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-required-role-keys-declared",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-rop-pipeline-shape",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-rule-26-keep-out",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-self-hosted-routing",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-self-hosted-uv-lane",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-skill-invocation-paths",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-source-trees-scoped-to-consumer",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-supervisor-discipline",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-tests-mirror-pairing",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-tests-no-subprocess-spawn",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-tool-backed-check-completeness",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-vendor-manifest",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-work-item-interpolation-delimiters",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-work-item-status-vocabulary",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-wrapper-shape",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines."
+    },
+    {
+      "name": "check-metadata-batch",
+      "present_in_just_check": false,
+      "reason": "CI batching job, not an executable check target: it runs each of its member checks by its own `just` recipe, and every member is in the `just check` aggregate (livespec-console-beads-fabro-wzrct7)."
     }
   ]
 }
