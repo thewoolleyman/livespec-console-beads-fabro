@@ -23,9 +23,9 @@ use std::thread;
 use std::time::Duration;
 
 use support::{
-    ConsoleSlot, HarnessResult, MAX_SCALE_PERMILLE, MAX_TIMEOUT, NO_SCALE_PERMILLE,
-    io_pressure_hundredths, load_scale_permille, loadavg_hundredths, parse_hundredths, poll_ready,
-    poll_settled, scaled_timeout,
+    ConsoleSlot, HarnessResult, MAX_SCALE_PERMILLE, MAX_TIMEOUT, MODAL_CONFIRM_LINE,
+    NO_SCALE_PERMILLE, io_pressure_hundredths, load_scale_permille, loadavg_hundredths,
+    parse_hundredths, poll_ready, poll_settled, poll_settled_modal, scaled_timeout,
 };
 
 /// A `/proc/pressure/io` body with the given `some avg10` percentage.
@@ -140,6 +140,84 @@ fn poll_settled_requires_two_identical_frames_before_returning() -> HarnessResul
     };
     let frame = poll_settled(source, "view: Lanes", Duration::from_secs(5), "")?;
     assert_eq!(frame, "view: Lanes ready");
+    Ok(())
+}
+
+// --- eejfd4: a modal wait settles only on an OPEN modal -----------------------
+
+/// The Detail pane of a pending-approval item, as captured in CI run
+/// 43338019749: its `Actions:` list wraps so a line reads
+/// `acceptance, Set acceptance-rework cap`, which contains "Set acceptance"
+/// while no modal is open.
+const DETAIL_PANE_ONLY: &str = "view: Attention | attention: 1\n\
+    Actions: Move status, Approve work-item,\n\
+    Reject work-item, Set admission, Set\n\
+    merge-on-review cap, Set review-fix cap, Set\n\
+    acceptance, Set acceptance-rework cap\n";
+
+/// A capture source that yields each frame in turn, then repeats the last.
+fn scripted_source(frames: &'static [&'static str]) -> impl FnMut() -> HarnessResult<String> {
+    let calls = Cell::new(0usize);
+    move || {
+        let i = calls.get();
+        calls.set(i + 1);
+        Ok(frames[i.min(frames.len() - 1)].to_owned())
+    }
+}
+
+#[test]
+fn a_bare_title_wait_settles_on_the_detail_pane_before_any_modal_opens() -> HarnessResult<()> {
+    // The hazard itself: the needle the step-3 wait used to pass is satisfied
+    // by the Detail pane alone, so `poll_settled` hands back a frame with no
+    // modal in it. This is why modal waits go through `poll_settled_modal`.
+    let frame = poll_settled(
+        scripted_source(&[DETAIL_PANE_ONLY]),
+        "Set acceptance",
+        Duration::from_secs(5),
+        "",
+    )?;
+    assert!(!frame.contains(MODAL_CONFIRM_LINE));
+    Ok(())
+}
+
+#[test]
+fn a_modal_wait_never_accepts_the_detail_pane_as_the_open_modal() -> HarnessResult<()> {
+    // Step 3's capture as CI saw it: "Set acceptance" in the Detail pane only.
+    // The modal wait must time out on it rather than return it.
+    match poll_settled_modal(
+        scripted_source(&[DETAIL_PANE_ONLY]),
+        "Set acceptance",
+        Duration::from_millis(300),
+        "",
+    ) {
+        Ok(frame) => Err(format!(
+            "a Detail-pane-only frame settled as the modal:\n{frame}"
+        )),
+        Err(error) if error.contains("timed out") => Ok(()),
+        Err(error) => Err(format!("expected a timeout, got: {error}")),
+    }
+}
+
+#[test]
+fn a_modal_wait_rejects_another_modal_and_returns_the_named_one() -> HarnessResult<()> {
+    // The Detail pane first, then a DIFFERENT open modal (its confirm line
+    // present, the wanted title absent), then the wanted modal, painted twice.
+    const OTHER_MODAL: &str =
+        "Approve work-item\nEnter to confirm | Esc to cancel\nActions: Move status\n";
+    const SET_ACCEPTANCE_MODAL: &str = "Set acceptance\nOption: ai-then-human\n\
+        Enter to confirm | Esc to cancel\n";
+    let frame = poll_settled_modal(
+        scripted_source(&[
+            DETAIL_PANE_ONLY,
+            OTHER_MODAL,
+            OTHER_MODAL,
+            SET_ACCEPTANCE_MODAL,
+        ]),
+        "Set acceptance",
+        Duration::from_secs(5),
+        "",
+    )?;
+    assert_eq!(frame, SET_ACCEPTANCE_MODAL);
     Ok(())
 }
 
