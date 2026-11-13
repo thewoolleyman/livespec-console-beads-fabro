@@ -347,7 +347,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "livespec-dev-tooling", git = "https://github.com/thewoolleyman/livespec-dev-tooling.git?tag=v1.206.0" },
-    { name = "livespec-runtime", git = "https://github.com/thewoolleyman/livespec-runtime.git?tag=v0.30.2" },
+    { name = "livespec-runtime", git = "https://github.com/thewoolleyman/livespec-runtime.git?tag=v0.30.4" },
     { name = "pyright", specifier = "==1.1.391" },
     { name = "pytest", specifier = "==8.3.4" },
     { name = "pytest-cov", specifier = "==6.0.0" },
@@ -367,8 +367,8 @@ dependencies = [
 
 [[package]]
 name = "livespec-runtime"
-version = "0.30.2"
-source = { git = "https://github.com/thewoolleyman/livespec-runtime.git?tag=v0.30.2#b2e5197af96c94c4cb78ce38fb7dc97ebc601901" }
+version = "0.30.4"
+source = { git = "https://github.com/thewoolleyman/livespec-runtime.git?tag=v0.30.4#93114093c5e8f1192678b5ba8d1cad5eb1064daa" }
 dependencies = [
     { name = "returns", version = "0.26.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "returns", version = "0.29.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },

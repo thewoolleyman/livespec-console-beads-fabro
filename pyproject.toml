@@ -53,7 +53,7 @@ dev = [
 
 [tool.uv.sources]
 livespec-dev-tooling = { git = "https://github.com/thewoolleyman/livespec-dev-tooling.git", tag = "v1.206.0" }
-livespec-runtime = { git = "https://github.com/thewoolleyman/livespec-runtime.git", tag = "v0.30.2" }
+livespec-runtime = { git = "https://github.com/thewoolleyman/livespec-runtime.git", tag = "v0.30.4" }
 
 [tool.livespec_dev_tooling]
 plan_lifecycle_anchor = true
