@@ -252,13 +252,6 @@
           "record": "livespec-dev-tooling-6tgd2z plan-scope-event 2026-11-01T22:36:24Z"
         }
       ],
-      // INTERIM (2026-11-04, legacy-coordinator-agent ruling under R493; plan
-      // stall-watchdog-false-kills, bd-ib-laf735): petri `fabro events` reads of long
-      // runs exceed the watchdog probe timeout, and a failed read is counted as quiet
-      // time, so the 7200 s default cancels runs that are still progressing (8 of 8
-      // petri cancels on 2026-11-04 were false kills). 21600 s leaves a silent run to
-      // the whole-run wall budget. REVERT this key once bd-ib-snq7o6 is released.
-      "stall_timeout_seconds": 21600,
       // Committed mirror of the sandbox image's published capability set, read by
       // the Definition-of-Done gate and by the host-side judgements when
       // /etc/livespec/sandbox-capabilities is not reachable. RE-MEASURED 2026-10-21 by
