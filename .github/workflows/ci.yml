@@ -211,7 +211,7 @@ jobs:
     # self-hosted host's label to route to it instead.
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.200.0
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.204.0
     env:
       # The image installs the pinned tools under /root (build-time HOME), but
       # container-hooks run steps with a DIFFERENT HOME — so mise's default data
@@ -403,7 +403,7 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.200.0
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.204.0
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
@@ -450,6 +450,7 @@ jobs:
           just check-ci-gate-parity || failed="$failed check-ci-gate-parity"
           just check-ci-matrix-completeness || failed="$failed check-ci-matrix-completeness"
           just check-ci-parity || failed="$failed check-ci-parity"
+          just check-ci-single-container-image || failed="$failed check-ci-single-container-image"
           just check-claude-md-coverage || failed="$failed check-claude-md-coverage"
           just check-codex-hook-reconcilable || failed="$failed check-codex-hook-reconcilable"
           just check-comment-line-anchors || failed="$failed check-comment-line-anchors"
@@ -461,6 +462,7 @@ jobs:
           just check-fork-drift || failed="$failed check-fork-drift"
           just check-global-writes || failed="$failed check-global-writes"
           just check-handoff-dispatch-routing || failed="$failed check-handoff-dispatch-routing"
+          just check-heading-coverage || failed="$failed check-heading-coverage"
           just check-heading-coverage-debt-register || failed="$failed check-heading-coverage-debt-register"
           just check-hook-trees-not-io-exempt || failed="$failed check-hook-trees-not-io-exempt"
           just check-keyword-only-args || failed="$failed check-keyword-only-args"
@@ -527,7 +529,7 @@ jobs:
     # PUBLIC clone INSIDE the container (no host mount — containment preserved).
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.200.0
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.204.0
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
@@ -620,7 +622,7 @@ jobs:
     if: ${{ !cancelled() && needs.classify-changes.outputs.docs_only != 'true' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.200.0
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.204.0
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
@@ -681,7 +683,7 @@ jobs:
     if: ${{ !cancelled() && needs.classify-changes.outputs.docs_only != 'true' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.200.0
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.204.0
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
@@ -722,7 +724,7 @@ jobs:
     if: ${{ !cancelled() && needs.classify-changes.outputs.docs_only != 'true' }}
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '["ubuntu-latest"]') }}
     container:
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.200.0
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-v1.204.0
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
@@ -770,7 +772,7 @@ jobs:
       # wall, measured 2026-09-06; livespec-console-beads-fabro-gqmtwa.1). Bumped in
       # lockstep with the python-rust pins above by the fleet pin rewrite (the
       # layer prefix is preserved; only the version moves).
-      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-fuzz-v1.200.0
+      image: ghcr.io/thewoolleyman/livespec-fabro-sandbox:python-rust-fuzz-v1.204.0
     env:
       MISE_DATA_DIR: /root/.local/share/mise
       MISE_NOT_FOUND_AUTO_INSTALL: "0"
