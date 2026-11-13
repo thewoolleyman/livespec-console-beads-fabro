@@ -1,12 +1,2 @@
-# Workflow-edit exemption — one exemption binds to one reviewed change.
-#
-# The change: .github/workflows/ci.yml wires every canonical livespec-dev-tooling
-# check into CI. It adds check-lint and check-types to the `check` matrix, adds
-# one gating `check-metadata-batch` job (one container setup, every canonical
-# check plus four repo-local gates as literal `just <slug>` lines), and adds
-# that job to ci-green and export-telemetry. The two `needs:` lists are
-# rewritten from flow style to block style so check-ci-matrix-completeness can
-# read them; their members are unchanged apart from the new job. MAINTAINER
-# tier: existing workflow lines are modified, so no additive attestation is made.
-work_item=livespec-console-beads-fabro-wzrct7
-reason=MAINTAINER tier under approval:workflow-edit, set on livespec-console-beads-fabro-wzrct7 under the maintainer's delegated authority (typed 2026-10-27 23:07Z, coordinator session 229eb13f; recorded on the item 2026-10-28T18:23Z), and the item was routed to this seat for hand-landing by legacy-coordinator-agent on 2026-11-12. The new batch job runs about 95 s of canonical checks measured back to back on the dev host, plus three small Rust check crates; it runs in parallel with the existing matrix, whose coverage and fuzz legs remain the critical path. actionlint -shellcheck= exit 0.
+work_item=livespec-console-beads-fabro-i2rqln
+reason=Drop the two waived-slug lines the v1.204.0 bump re-inserted into ci.yml (and the justfile), so #1363's net diff against master is exactly the bot's image-tag bump; logically additive, authorized by legacy-coordinator-agent under the maintainer's additive delegation (coordinator-duties section 12); root defect livespec-dev-tooling-mlhzau.
