@@ -33,4 +33,9 @@ shellcheck = "0.11.0"
 # livespec-fabro-sandbox image the `check` matrix runs in does NOT, so without
 # this pin the test would only be runnable on a hosted runner and would fail
 # everywhere `just check` is actually executed.
-jq = "1.7.1"
+#
+# Pinned to the 1.7 series, not 1.7.1: mise resolves the prefix to the newest
+# 1.7.x (1.7.1 on the hosts), while the sandbox image's jq reports `jq-1.7`, and
+# check-check-tools matches the pin as a substring of `jq --version`. A 1.7.1 pin
+# failed that check in the delegated gate Job (livespec-console-beads-fabro-wzrct7).
+jq = "1.7"
