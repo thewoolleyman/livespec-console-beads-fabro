@@ -1398,7 +1398,7 @@ const APPROVE_MODAL_TITLE: &str = "Approve work-item";
 /// Step 7: `c` opens the accept valve.
 const ACCEPT_MODAL_TITLE: &str = "Accept work-item";
 /// Both valve modals close on this exact affordance line.
-const VALVE_CONFIRM_LINE: &str = "Enter to confirm | Esc to cancel";
+const VALVE_CONFIRM_LINE: &str = support::MODAL_CONFIRM_LINE;
 /// The operator walkthrough must document the per-item override that makes the
 /// human accept valve reachable when the repo default is `ai-only`.
 const LIFECYCLE_WALKTHROUGH_DOC: &str = include_str!("../../../docs/lifecycle-walkthrough.md");
@@ -1497,7 +1497,7 @@ fn drive_backlog_item_moves_without_valves() -> HarnessResult<()> {
         "backlog item must keep the operator-drivable move hint:\n{backlog_screen}"
     );
     backlog.send_keys(&["s"])?;
-    let backlog_move = backlog.wait_for_settled("Move status", render_timeout())?;
+    let backlog_move = backlog.wait_for_modal("Move status", render_timeout())?;
     assert!(
         backlog_move.contains("ready")
             && backlog_move.contains(VALVE_CONFIRM_LINE)
@@ -1526,7 +1526,7 @@ fn drive_acceptance_item_offers_both_exits() -> HarnessResult<()> {
         "acceptance item must not offer the pending-approval-only approve hint:\n{acceptance_screen}"
     );
     acceptance.send_keys(&["s"])?;
-    let acceptance_move = acceptance.wait_for_settled("Move status", render_timeout())?;
+    let acceptance_move = acceptance.wait_for_modal("Move status", render_timeout())?;
     assert!(
         acceptance_move.contains("backlog")
             && !acceptance_move.contains("done")
@@ -1574,7 +1574,7 @@ fn set_human_acceptance_leg(
     tenant: &str,
 ) -> HarnessResult<()> {
     console.send_keys(&["n"])?;
-    let set_acceptance = console.wait_for_settled("Set acceptance", render_timeout())?;
+    let set_acceptance = console.wait_for_modal("Set acceptance", render_timeout())?;
     assert!(
         set_acceptance.contains("ai-then-human") && set_acceptance.contains(VALVE_CONFIRM_LINE),
         "step 3: the set-acceptance modal must default to ai-then-human for {tenant}:\n{set_acceptance}"
@@ -1675,7 +1675,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
 
     // --- Steps 4-5: `p` opens the approve valve, Enter confirms it -----------
     console.send_keys(&["p"])?;
-    let modal = console.wait_for_settled(APPROVE_MODAL_TITLE, render_timeout())?;
+    let modal = console.wait_for_modal(APPROVE_MODAL_TITLE, render_timeout())?;
     assert!(
         modal.contains(VALVE_CONFIRM_LINE),
         "step 4: the approve modal must show its confirm affordance for {tenant}:\n{modal}"
@@ -1709,7 +1709,7 @@ fn walk_documented_lifecycle(repo: &RepoFixture, index: usize) -> HarnessResult<
 
     // --- Steps 7-8: `c` opens the accept valve, Enter ships the item ---------
     console.send_keys(&["c"])?;
-    let accept = console.wait_for_settled(ACCEPT_MODAL_TITLE, render_timeout())?;
+    let accept = console.wait_for_modal(ACCEPT_MODAL_TITLE, render_timeout())?;
     assert!(
         accept.contains(VALVE_CONFIRM_LINE),
         "step 7: the accept modal must show its confirm affordance for {tenant}:\n{accept}"

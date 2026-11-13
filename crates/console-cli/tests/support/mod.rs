@@ -492,6 +492,45 @@ where
     }
 }
 
+/// The affordance line every open valve modal and picker renders, and nothing
+/// else on screen does. The Detail pane's `Actions:` list names the same verbs
+/// a modal is titled with ("Set acceptance", "Approve work-item", "Move
+/// status", ...), so a modal title alone is NOT evidence the modal is open: a
+/// wait on the bare title can settle on the Detail pane before the modal paints
+/// (livespec-console-beads-fabro-eejfd4, recurring tyeonw's step-3 flake).
+pub const MODAL_CONFIRM_LINE: &str = "Enter to confirm | Esc to cancel";
+
+/// Like [`poll_settled`], but the settled frame must show an OPEN modal: it
+/// must contain both `title` and [`MODAL_CONFIRM_LINE`]. The settle and
+/// loading-tell rules are `poll_settled`'s own, applied to the confirm line, so
+/// a frame naming `title` only in the Detail pane never satisfies it.
+pub fn poll_settled_modal<F>(
+    mut capture: F,
+    title: &str,
+    timeout: Duration,
+    context: &str,
+) -> HarnessResult<String>
+where
+    F: FnMut() -> HarnessResult<String>,
+{
+    let gated = || {
+        let frame = capture()?;
+        Ok(if frame.contains(title) {
+            frame
+        } else {
+            // Hide the confirm line from `poll_settled` until the title is
+            // present too, so only a frame carrying both can settle.
+            frame.replace(MODAL_CONFIRM_LINE, "")
+        })
+    };
+    poll_settled(
+        gated,
+        MODAL_CONFIRM_LINE,
+        timeout,
+        &format!(" (modal {title:?}){context}"),
+    )
+}
+
 /// Monotonic suffix so concurrently-running harness instances never collide on
 /// a `tmux` session name or temp dir.
 static NONCE: AtomicU32 = AtomicU32::new(0);
@@ -742,6 +781,14 @@ impl TmuxConsole {
     pub fn wait_for_settled(&self, needle: &str, timeout: Duration) -> HarnessResult<String> {
         let context = format!(" in tmux session {}", self.session);
         poll_settled(|| self.capture(), needle, timeout, &context)
+    }
+
+    /// Block until a settled frame shows the modal titled `title` OPEN, per
+    /// [`poll_settled_modal`]. Use this, never [`Self::wait_for_settled`] on a
+    /// bare modal title, after a key that opens a valve modal or picker.
+    pub fn wait_for_modal(&self, title: &str, timeout: Duration) -> HarnessResult<String> {
+        let context = format!(" in tmux session {}", self.session);
+        poll_settled_modal(|| self.capture(), title, timeout, &context)
     }
 
     /// Block until the TUI paints its first non-blank frame, or fail with a
