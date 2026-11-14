@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/thewoolleyman/livespec-console-beads-fabro/compare/v0.5.0...v0.6.0) (2026-11-14)
+
+
+### Features
+
+* **tui:** Lanes plan column names the parent plan, blank when plan-less ([71ed6a8](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/71ed6a86a384d86d6f3e7171b2ca49f62a63bf67))
+
+
+### Bug Fixes
+
+* **deps:** bump rusqlite to 0.41.1 past RUSTSEC-2026-0459 (bundled SQLite 3.54.1) ([c7db208](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/c7db208330d9087485aba0f1bd31709ff0a2205a))
+* resolve the clone root through ~/workspace in docs, recipes and cache eviction ([25dfd50](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/25dfd5012af63c27c7449e9aff13ebe56d5e89e0))
+* **test:** name --cov-config in pytest addopts so a bare --cov run combines ([fc7855e](https://github.com/thewoolleyman/livespec-console-beads-fabro/commit/fc7855eb6cc6c2ef12d5fcc2d364aa4f354de5f0))
+
 ## [0.5.0](https://github.com/thewoolleyman/livespec-console-beads-fabro/compare/v0.4.0...v0.5.0) (2026-10-30)
 
 
