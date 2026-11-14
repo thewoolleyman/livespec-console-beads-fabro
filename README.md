@@ -1,5 +1,7 @@
 # livespec-console-beads-fabro
 
+Built with [livespec](https://livespec-ai.org/)
+
 `livespec-console-beads-fabro` is the operator console for the
 LiveSpec family when work is tracked in Beads and executed through the
 Beads/Fabro orchestrator. It is intentionally substrate-specific: it is
