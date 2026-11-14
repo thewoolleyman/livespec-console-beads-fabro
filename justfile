@@ -272,6 +272,7 @@ check:
         check-check-tools
         check-ci-gate-parity
         check-ci-matrix-completeness
+        check-ci-single-container-image
         check-claude-md-coverage
         check-codex-hook-reconcilable
         check-comment-line-anchors
@@ -282,6 +283,7 @@ check:
         check-fleet-marketplace-relative-sources
         check-global-writes
         check-handoff-dispatch-routing
+        check-heading-coverage
         check-heading-coverage-debt-register
         check-hook-trees-not-io-exempt
         check-keyword-only-args
@@ -291,6 +293,7 @@ check:
         check-master-ci-green
         check-match-keyword-only
         check-newtype-domain-primitives
+        check-no-ambient-environment-loops
         check-no-direct-destructive-cli
         check-no-direct-tool-invocation
         check-no-except-outside-io
@@ -1211,3 +1214,6 @@ check-ci-single-container-image:
 
 check-heading-coverage:
     uv run python -m livespec_dev_tooling.checks.heading_coverage
+
+check-no-ambient-environment-loops:
+    uv run python -m livespec_dev_tooling.checks.no_ambient_environment_loops
