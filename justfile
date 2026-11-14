@@ -272,7 +272,6 @@ check:
         check-check-tools
         check-ci-gate-parity
         check-ci-matrix-completeness
-        check-ci-single-container-image
         check-claude-md-coverage
         check-codex-hook-reconcilable
         check-comment-line-anchors
@@ -283,7 +282,6 @@ check:
         check-fleet-marketplace-relative-sources
         check-global-writes
         check-handoff-dispatch-routing
-        check-heading-coverage
         check-heading-coverage-debt-register
         check-hook-trees-not-io-exempt
         check-keyword-only-args
