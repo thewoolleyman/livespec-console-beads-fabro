@@ -69,7 +69,7 @@ the convention every work item in this tenant follows so they can:
   `upstream-dep-proxy-upstream-unknown`.
 - **The venue reads TWO ledgers under ONE wrapper invocation.** D, E, U and the
   stale warning are cross-tenant, so the recipe reads this tenant and then
-  `/data/projects/livespec-orchestrator-beads-fabro` inside a SINGLE
+  `~/workspace/livespec-orchestrator-beads-fabro` inside a SINGLE
   `with-livespec-env.sh` call (`bd` resolves its tenant from the current
   directory), and passes `--upstream <orch.json> --now <YYYY-MM-DD>` to the
   crate, which stays pure and clock-free. One invocation because each is an
@@ -155,7 +155,7 @@ still ended its turn on a "still outstanding" list).
    the TUI pane's command shows as `sudo` (the credential wrapper's re-exec),
    not the binary name. If it is absent, rebuild when master moved
    (`cargo build --release --bin livespec-console-beads-fabro`) and recreate it:
-   `tmux split-window -h -l 50% -t <session> -P -F '#{pane_id}' "bash -c 'exec /data/projects/1password-env-wrapper/with-livespec-env.sh -- env TERM=screen-256color COLORTERM=truecolor LIVESPEC_CONSOLE_REPO_PATH=/data/projects/livespec-console-beads-fabro /data/projects/livespec-console-beads-fabro/target/release/livespec-console-beads-fabro tui'"`
+   `tmux split-window -h -l 50% -t <session> -P -F '#{pane_id}' "bash -c 'exec $HOME/workspace/1password-env-wrapper/with-livespec-env.sh -- env TERM=screen-256color COLORTERM=truecolor LIVESPEC_CONSOLE_REPO_PATH=$HOME/workspace/livespec-console-beads-fabro $HOME/workspace/livespec-console-beads-fabro/target/release/livespec-console-beads-fabro tui'"`
    then `tmux select-pane -L` to return focus. The wrapper strips TERM, so
    pass it explicitly or the TUI renders without colour and looks blank.
    Record the pane id in the handoff. Every dogfood pass drives THAT pane
@@ -273,7 +273,7 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
     - [`.ai/fleet-repo-naming.md`](.ai/fleet-repo-naming.md)
       — never use bare "beads-fabro" (two sibling repos end in it); the
       repo ↔ tenant ↔ ID-prefix map, and targeting repos by full
-      `/data/projects/<full-name>` path for destructive / tenant ops.
+      `~/workspace/<full-name>` path for destructive / tenant ops.
     - [`.ai/livespec-plugin-currency.md`](.ai/livespec-plugin-currency.md)
       — keeping the livespec plugins current: per-project pins go stale,
       `claude plugin update <name>@<marketplace> --scope project` (why the
@@ -391,7 +391,7 @@ its tenant only when ALL of the following are present:
   injected by THIS project's configured env wrapper. This is a FAMILY tenant: it
   shares the one family password via the family 1Password Environment wrapper
   `with-livespec-env.sh` (canonical copy at
-  `/data/projects/1password-env-wrapper/with-livespec-env.sh`). `bd` consumes the
+  `~/workspace/1password-env-wrapper/with-livespec-env.sh`). `bd` consumes the
   bare var — there is NO per-tenant `BEADS_DOLT_PASSWORD_<tenant>` variable and
   NO per-tenant→bare mapping. Real isolation comes from the per-tenant SQL user +
   DB-scoped grant, not from password distinctness. Secrets are probe-only —
@@ -409,7 +409,7 @@ run from this repo's root, or `bd` silently operates on the wrong tenant.
 launched under the wrapper"; the wrapper applies per command. The canonical
 invocation is `with-livespec-env.sh -- <command>`, e.g.
 
-    /data/projects/1password-env-wrapper/with-livespec-env.sh -- bd list --status all -n 0
+    "$HOME/workspace/1password-env-wrapper/with-livespec-env.sh" -- bd list --status all -n 0
 
 which injects the bare `BEADS_DOLT_PASSWORD` for that one command. **`bd list`
 silently truncates TWICE, and the two truncations need two different flags.**
@@ -455,12 +455,12 @@ sentinel variables of any name vanish. The failure is SILENT — the program
 runs, exits 0, and behaves as though you never set the variable.
 
     # WRONG — silently dropped, no error, exit 0
-    LIVESPEC_CONSOLE_REPO_PATH=/data/projects/foo \
+    LIVESPEC_CONSOLE_REPO_PATH="$HOME/workspace/foo" \
       with-livespec-env.sh -- livespec-console-beads-fabro serve
 
     # RIGHT — set it inside the wrapper's environment
     with-livespec-env.sh -- env \
-      LIVESPEC_CONSOLE_REPO_PATH=/data/projects/foo \
+      LIVESPEC_CONSOLE_REPO_PATH="$HOME/workspace/foo" \
       livespec-console-beads-fabro serve
 
 The wrapper also supplies only a minimal system `PATH`
@@ -609,7 +609,7 @@ check-baseline` is the fail-closed verifier wired into `just check`.
 2. If the change will modify tracked files, create a dedicated worktree from the
    primary checkout's `master` and do all edits there. Every worktree lives under
    the per-user root `~/.worktrees/livespec-console-beads-fabro/<branch>` — NEVER
-   as a peer of the clones under `/data/projects`. **Create it with the recipe,
+   as a peer of the clones under `~/workspace`. **Create it with the recipe,
    preferably, rather than raw `git worktree add`:**
 
    ```bash

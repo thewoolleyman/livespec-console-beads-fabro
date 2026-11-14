@@ -210,8 +210,9 @@ What to do when you see exit code 3 with this message:
    KEY = "livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro"
    rows = json.loads((pathlib.Path.home() / ".claude/plugins/installed_plugins.json")
                      .read_text())["plugins"][KEY]
-   me = "/data/projects/livespec-console-beads-fabro"
-   root = next(r["installPath"] for r in rows if r.get("projectPath") == me)
+   me = (pathlib.Path.home() / "workspace/livespec-console-beads-fabro").resolve()
+   root = next(r["installPath"] for r in rows
+               if pathlib.Path(r.get("projectPath") or "").resolve() == me)
    # -> .../cache/.../<current-sha>; use f"{root}/scripts/bin/drive.py"
    ```
 
@@ -249,10 +250,11 @@ time it dispatches:
 
 ```bash
 P=$(python3 -c "
-import json
+import json, os
 d = json.load(open('/home/ubuntu/.claude/plugins/installed_plugins.json'))
+me = os.path.realpath(os.path.expanduser('~/workspace/livespec-console-beads-fabro'))
 for e in d['plugins']['livespec-orchestrator-beads-fabro@livespec-orchestrator-beads-fabro']:
-    if e.get('projectPath') == '/data/projects/livespec-console-beads-fabro':
+    if os.path.realpath(e.get('projectPath') or '') == me:
         print(e['installPath']); break
 ")
 [ -d "$P" ] || { echo "FATAL: pinned plugin path not found: $P" >&2; exit 1; }

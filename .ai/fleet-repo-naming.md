@@ -22,8 +22,8 @@ console tenant (`livespec-console-beads-fabro`) vs the orchestrator
 tenant (`livespec-orch-beads-fabro`) are one careless label away from
 each other. Always:
 
-- target a repo by its **full `/data/projects/<full-name>` path** (e.g.
-  `env -C /data/projects/livespec-orchestrator-beads-fabro ...`), never a
+- target a repo by its **full `~/workspace/<full-name>` path** (e.g.
+  `env -C "$HOME/workspace/livespec-orchestrator-beads-fabro" ...`), never a
   bare shorthand, and
 - **verify the resulting ID prefix** (`bd-ib-` = orchestrator-beads-fabro,
   `bd-gj-` = orchestrator-git-jsonl, `livespec-console-beads-fabro-` =

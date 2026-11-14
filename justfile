@@ -750,9 +750,9 @@ gate-upstream-deps:
     if ! /usr/local/bin/with-livespec-env.sh -- bash -c '
         set -uo pipefail
         bd list --status all --json -n 0 > "$1" || exit 1
-        cd /data/projects/livespec-orchestrator-beads-fabro || exit 1
+        cd "$3" || exit 1
         bd list --status all --json -n 0 > "$2" || exit 1
-    ' gate-upstream-deps "${ledger}" "${upstream}"; then
+    ' gate-upstream-deps "${ledger}" "${upstream}" "${HOME}/workspace/livespec-orchestrator-beads-fabro"; then
         echo "gate-upstream-deps: FAIL CLOSED — could not read both the console and orchestrator ledgers through the credential wrapper; refusing rather than passing blind" >&2
         exit 1
     fi
