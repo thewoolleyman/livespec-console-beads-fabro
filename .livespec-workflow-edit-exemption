@@ -1,2 +1,2 @@
-work_item=livespec-console-beads-fabro-tb6qi4
-reason=Drop the two waived-slug lines the v1.207.0 bump re-inserted into ci.yml (and the justfile), so #1367's net diff against master is exactly the bot's image-tag bump; logically additive, authorized by legacy-coordinator-agent under the maintainer's additive delegation (coordinator-duties section 12); root defect livespec-dev-tooling-mlhzau.
+work_item=livespec-console-beads-fabro-4groim
+reason=Drop the two waived-slug lines the v1.208.0 bump re-inserted into ci.yml (and the justfile), so #1371's net diff against master is exactly the bot's image-tag bump; logically additive, authorized by legacy-coordinator-agent under the maintainer's additive delegation (coordinator-duties section 12); root defect livespec-dev-tooling-mlhzau.
