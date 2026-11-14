@@ -37,6 +37,11 @@
       "reason": "Merge-gate mutation run (livespec-console-beads-fabro-txtzn5.10). Deliberately absent from the `just check` aggregate: SPECIFICATION/non-functional-requirements.md ratifies that `just check` MUST NOT include mutation runs. It also cannot run there — it needs a base ref to diff against, which a local aggregate invocation has no way to supply."
     },
     {
+      "name": "check-no-ambient-environment-loops",
+      "present_in_ci": false,
+      "reason": "Runs in CI as a literal `just` line inside the check-metadata-batch job (livespec-console-beads-fabro-wzrct7), which batches every canonical livespec-dev-tooling check under one container setup the way livespec-runtime's check-metadata-batch does, rather than as a CI job of its own name; check-ci-matrix-completeness reads those lines. Added with the livespec-dev-tooling v1.209.0 bump that introduced the canonical check (livespec-console-beads-fabro-idpjm2)."
+    },
+    {
       "name": "check-no-workflow-edits",
       "present_in_ci": false,
       "reason": "Runs in the janitor/local aggregate only, BY DESIGN (livespec-dev-tooling-fy02): the pack body dev-tooling/check-no-workflow-edits.sh is an authorship control at the agent boundary and is a deliberate no-op when GITHUB_ACTIONS is set — CI has no local author to control, and the fleet's bot lanes (pin bumps, the canonical-slug reconciler, release-please) legitimately rewrite workflow files there. Master is protected by PR gate ≡ master gate, which this guard neither weakens nor strengthens, so a CI job would be vacuous rather than merely un-added."
