@@ -142,14 +142,14 @@ live_lock_entries() {
     # ~/.cargo/registry is shared by every Rust checkout here, so liveness is
     # host-wide: this repo, every worktree, and every project under the lock
     # roots (LOCAL_CACHE_EVICT_LOCK_ROOTS, colon-separated; depth <= 3).
-    local roots="${LOCAL_CACHE_EVICT_LOCK_ROOTS:-/data/projects:$HOME/.worktrees}"
+    local roots="${LOCAL_CACHE_EVICT_LOCK_ROOTS:-$HOME/workspace:$HOME/.worktrees}"
     local root
     {
         printf '%s\n' "$repo_root/Cargo.lock" "$repo_root/fuzz/Cargo.lock"
         IFS=: read -r -a root_list <<< "$roots"
         for root in "${root_list[@]}"; do
             [ -d "$root" ] || continue
-            find "$root" -maxdepth 3 -name Cargo.lock -type f 2>/dev/null
+            find -H "$root" -maxdepth 3 -name Cargo.lock -type f 2>/dev/null
         done
     } | sort -u | while IFS= read -r lock; do
         [ -f "$lock" ] || continue
