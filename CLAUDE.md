@@ -281,6 +281,14 @@ commands, projections, TUI/GUI presentation, and human-attention routing.
       marketplace upgrade`, "latest" = the `vX.Y.Z` tag, and the beads
       self-heal landing in orchestrator ≥ 0.4.0 (and how that qualifies the
       "Access denied ⇒ outside the wrapper" rule below).
+    - The fleet's distributed SendMessage protocol
+      (https://github.com/thewoolleyman/livespec-dev-tooling/blob/master/%2Eai/distributed-sendmessage-protocol.md)
+      — read BEFORE messaging, asking, directing or answering another agent
+      session on any host, and before running `herdr pane send-text`,
+      `herdr pane run`, `herdr agent prompt` or `tmux send-keys` against a pane
+      you did not create. Claude sessions talk through `SendMessage` (across
+      machines via Remote Control), never by typing into each other's panes
+      (maintainer ruling 2026-11-14).
     - [`.ai/linkable-references.md`](.ai/linkable-references.md)
       — every maintainer-facing reference must be web-linkable (GitHub
       URL for git-side content; a beads id must carry title + substance
