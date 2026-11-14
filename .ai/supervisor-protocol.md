@@ -132,6 +132,14 @@ tmux capture-pane -p -t "$WORKER_TARGET" -S -40
 pane. It is NOT "the last 40 lines." Do NOT pipe to `tail -N`; `-N` is a
 placeholder and `tail` rejects it.
 
+**A Claude worker is not driven by typing (superseded 2026-11-14).** Send a
+Claude worker its instructions with `SendMessage`, per the fleet's distributed
+SendMessage protocol (https://github.com/thewoolleyman/livespec-dev-tooling/blob/master/.ai/distributed-sendmessage-protocol.md);
+a managed hook denies literal-text `tmux send-keys` into a Claude pane. The
+typed-text idioms below apply only to a Codex or pi worker, which cannot
+receive `SendMessage`. Key-only input (Escape, Enter, a picker digit) to
+unblock a picker or dialog stays allowed for any worker.
+
 Short instruction: send the text, VERIFY it landed, then send Enter
 SEPARATELY:
 
